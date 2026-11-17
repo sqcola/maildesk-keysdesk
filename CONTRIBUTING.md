@@ -66,7 +66,7 @@ fs.fsyncSync(fd);
 ## 报告问题
 
 - **功能问题 / Bug**：开 Issue，用 Bug 模板，附上版本、系统、复现步骤
-- **安全漏洞**：**不要开公开 Issue**，见 [SECURITY.md](../../SECURITY.md)
+- **安全漏洞**：**不要开公开 Issue**，见 [SECURITY.md](SECURITY.md)
 
 ## 代码风格
 
