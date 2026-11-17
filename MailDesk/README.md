@@ -1,6 +1,11 @@
 # 邮箱管家 MailDesk
 
+![Version](https://img.shields.io/badge/version-0.1.0--SNAPSHOT-orange?style=flat-square)
+![Tests](https://img.shields.io/badge/assertions-201%20passing-brightgreen?style=flat-square)
+
 一个零依赖的本地邮件管理工具：批量管 Outlook / Microsoft 账号，收信发信、批量收验证码，并标注每个邮箱注册过哪些第三方服务。
+
+> 版本号以 [Releases 页](https://github.com/sqcola/maildesk-keysdesk/releases) 为准。
 
 <p align="center">
   <img src="../docs/images/maildesk.jpg" alt="MailDesk 界面：按平台筛选邮箱" width="780">

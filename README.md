@@ -1,9 +1,14 @@
 # MailDesk & KeyDesk
 
-[![Release](https://img.shields.io/github/v/release/sqcola/maildesk-keysdesk?color=blue)](https://github.com/sqcola/maildesk-keysdesk/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen)](https://nodejs.org/)
-[![Dependencies](https://img.shields.io/badge/dependencies-0-success)](MailDesk/README.md)
+![Version](https://img.shields.io/badge/version-0.1.0--SNAPSHOT-orange?style=flat-square)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square)
+![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen?style=flat-square)
+![Dependencies](https://img.shields.io/badge/dependencies-0-success?style=flat-square)
+![Tests](https://img.shields.io/badge/assertions-498%20passing-brightgreen?style=flat-square)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
+
+> **当前版本以 [Releases 页](https://github.com/sqcola/maildesk-keysdesk/releases) 为准**：
+> 最新验证版本是 `0.1.0-SNAPSHOT`（截至本文最后更新）。本 README 不单独维护版本号。
 
 两个**零依赖**的本地工具，解决同一件事的两面：**批量管理邮箱**，和**安全保管它们的 2FA 凭据**。
 

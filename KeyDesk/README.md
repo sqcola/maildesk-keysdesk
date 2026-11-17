@@ -1,6 +1,11 @@
 # KeyDesk — 2FA 密钥与恢复码管理
 
+![Version](https://img.shields.io/badge/version-0.1.0--SNAPSHOT-orange?style=flat-square)
+![Tests](https://img.shields.io/badge/assertions-297%20passing-brightgreen?style=flat-square)
+
 本地 2FA 凭据管理工具。零第三方依赖，纯本地运行，**没有密钥文件**——密钥从你输入的口令派生。
+
+> 版本号以 [Releases 页](https://github.com/sqcola/maildesk-keysdesk/releases) 为准。
 
 <p align="center">
   <img src="../docs/images/keydesk.jpg" alt="KeyDesk 界面：条目列表与大号验证码" width="780">
