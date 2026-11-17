@@ -68,7 +68,7 @@ cd maildesk-keysdesk/KeyDesk && node server.js
 
 **零依赖不是口号。** 没有 `package.json`，没有 `node_modules`。所有密码学走 Node 内置 `crypto`，QR 编码是自己写的（含 Reed-Solomon），TOTP 过了 RFC 6238 全部 18 个官方向量。
 
-**测试是真的在测。** 两个工具共 200+ 条断言，其中包括变异测试——把修复逐个改回 bug，确认测试会变红。
+**测试是真的在测。** 两个工具共 498 条断言（MailDesk 201 / KeyDesk 297），其中包括变异测试——把修复逐个改回 bug，确认测试会变红。
 
 **威胁模型写清楚了。** 每个工具都明确列出"能防什么、防不住什么"。比如 KeyDesk 会告诉你：内存 dump 防不住，键盘记录防不住，云盘的历史版本管不到。不吹牛比吹牛更难，也更有用。
 

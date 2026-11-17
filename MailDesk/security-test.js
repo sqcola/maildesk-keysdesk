@@ -11,11 +11,18 @@ const http = require('http');
 const net = require('net');
 
 let pass = 0, fail = 0;
+const failures = [];   // 失败项明细，末尾统一再列一遍
 function t(name, fn) {
   return Promise.resolve()
     .then(fn)
     .then(() => { console.log('  ✓ ' + name); pass++; })
-    .catch(e => { console.log('  ✗ ' + name + '\n      ' + e.message); fail++; });
+    .catch(e => {
+      console.log('  ✗ ' + name + '\n      ' + e.message);
+      fail++;
+      // 单独收集：末尾统一再列一遍。混在一大片 ✓ 里的单条 ✗ 很容易被刷过去，
+      // 而"测试挂了但没人注意到"比测试没写更糟。
+      failures.push(name + ' — ' + e.message);
+    });
 }
 
 function req(port, opts, body) {
@@ -712,6 +719,10 @@ function rawReq(port, line) {
 
   console.log(`\n${'='.repeat(50)}`);
   console.log(`结果： ${pass} 通过， ${fail} 失败`);
+  if (failures.length) {
+    console.log('\n失败项：');
+    for (const f of failures) console.log('  - ' + f);
+  }
   console.log('='.repeat(50) + '\n');
 
   process.exit(fail ? 1 : 0);

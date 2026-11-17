@@ -15,7 +15,7 @@
 ```bash
 cd MailDesk
 node selftest.js        # 146 项，功能正确性
-node security-test.js   # 32 项，安全性（起真实 HTTP 服务）
+node security-test.js   # 55 项，安全性（起真实 HTTP 服务）
 
 cd ../KeyDesk
 node selftest.js        # 226 项
