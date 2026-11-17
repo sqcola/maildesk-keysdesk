@@ -1,5 +1,10 @@
 # MailDesk & KeyDesk
 
+[![Release](https://img.shields.io/github/v/release/sqcola/maildesk-keysdesk?color=blue)](https://github.com/sqcola/maildesk-keysdesk/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen)](https://nodejs.org/)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-success)](MailDesk/README.md)
+
 两个**零依赖**的本地工具，解决同一件事的两面：**批量管理邮箱**，和**安全保管它们的 2FA 凭据**。
 
 跑在你自己电脑上，数据不出本机，没有云、没有第三方依赖、没有 `npm install`。
