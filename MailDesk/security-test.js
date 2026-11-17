@@ -75,6 +75,17 @@ function rawReq(port, line) {
   const PORT = parseInt(addr.split(':').pop(), 10);
   console.log('  端口 ' + PORT + '  临时数据 ' + TEST_DATA);
 
+  // 端口顺延会让一部分断言悄悄失效：M1 那两条 Host 校验用
+  // `127.0.0.1:${PORT}` 作为期望值，而服务端的 expectedHosts 是启动时
+  // 按实际端口算的——两边理论上该一致。但如果外部已有实例占着 2131，
+  // 测试服务会顺延到 2132，这时如果代码里还有别处硬编码了 2131，
+  // 就会出现「偶发一条红、重跑又绿」的假象（我遇到过一次 54/55）。
+  // 与其猜，不如把实际端口和顺延情况打出来。
+  if (PORT !== 2131) {
+    console.log('  ⚠️  端口顺延了（2131 被占用），本次跑在 ' + PORT +
+      '。如果看到偶发失败，先确认没有别的 MailDesk 实例在跑。');
+  }
+
   const AUTH = { 'Authorization': 'Bearer ' + SESSION_TOKEN };
 
   console.log('\n=== H1: 畸形百分号编码不应崩溃 ===');
