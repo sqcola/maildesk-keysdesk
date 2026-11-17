@@ -1,0 +1,43 @@
+# 根目录只放架构性文件与入口文件。
+# 下面这些规则是「宁可多挡，不可漏挡」——凭据一旦进 git 历史，删除提交是不够的。
+
+# ===== 凭据与密钥：任何情况下都不许提交 =====
+vault.key
+*.key
+handshake
+server.lock
+.maildesk/
+
+# 加密库与一切副本
+*.enc
+*.enc.*
+*.bak
+*.bak.*
+data/
+data_restore_backup/
+exports/
+
+# ===== 账号列表 / 号商文件 =====
+cards-*.txt
+*.txt
+!requirements.txt
+
+# ===== 运行时与构建产物 =====
+node_modules/
+*.log
+_tmp/
+tmp/
+extracted/
+
+# ===== 编辑器与系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 本地测试脚手架 =====
+_test_*.js
+_tmp_*.js
+tmp-*.js
+_probe-*/

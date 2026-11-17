@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>邮箱管家</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- 侧栏 -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-icon">✉</span>
+      <span class="brand-name">邮箱管家</span>
+    </div>
+
+    <div class="side-stats">
+      <div class="stat">
+        <div class="stat-num" id="statTotal">0</div>
+        <div class="stat-lbl">账户</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num ok" id="statOk">0</div>
+        <div class="stat-lbl">可用</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num bad" id="statBad">0</div>
+        <div class="stat-lbl">异常</div>
+      </div>
+    </div>
+
+    <div class="side-actions">
+      <button class="btn btn-primary" id="btnAdd">＋ 添加账户</button>
+      <button class="btn" id="btnImport">批量导入</button>
+      <button class="btn" id="btnCheckAll">全部检测</button>
+      <button class="btn" id="btnExportPlatforms">导出平台清单</button>
+    </div>
+
+    <div class="side-filter">
+      <input type="text" id="search" placeholder="搜索邮箱…">
+      <select id="groupFilter"><option value="">全部分组</option></select>
+      <select id="platformFilter"><option value="">全部平台</option></select>
+      <div class="side-select">
+        <label class="chk"><input type="checkbox" id="chkSelectAll"> 全选当前筛选</label>
+        <span id="selCount">已选 0 个</span>
+      </div>
+    </div>
+
+    <div class="account-list" id="accountList">
+      <div class="empty">还没有账户<br><small>点击“添加账户”开始</small></div>
+    </div>
+
+    <div class="bulk-bar" id="bulkBar" hidden>
+      <span id="bulkCount"></span>
+      <button id="btnBulkPlatforms">标注平台</button>
+      <button id="btnBulkCodes">收验证码</button>
+      <button id="btnBulkClear">清除选择</button>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <h2 id="currentEmail">选择一个账户</h2>
+        <button class="btn btn-sm" id="btnCopyEmail" title="复制邮箱地址" disabled>复制</button>
+        <span class="badge" id="currentStatus" role="status" aria-live="polite"></span>
+      </div>
+      <div class="toolbar-right">
+        <label class="chk"><input type="checkbox" id="chkAutoCopy" checked> 自动复制</label>
+        <select id="folderSelect"><option value="INBOX">收件箱</option></select>
+        <button class="btn btn-sm" id="btnCodes">收验证码</button>
+        <button class="btn btn-sm" id="btnRefresh">刷新</button>
+        <button class="btn btn-sm btn-primary" id="btnCompose">写邮件</button>
+      </div>
+    </div>
+
+    <div class="code-panel" id="codePanel"></div>
+
+    <!-- 平台标注：账户信息区。账户详情没有独立页面，这块紧贴工具栏的
+         #currentEmail，属于账户信息而不是邮件区（邮件区是下面的 .content）。 -->
+    <div class="pf-editor" id="pfEditor" hidden>
+      <div class="pf-editor-head">平台账号 <span class="pf-hint">标注这个邮箱注册过哪些服务</span></div>
+      <div class="pf-chips" id="pfChips"></div>
+      <button class="btn btn-sm" id="pfAdd" type="button">＋ 添加平台</button>
+    </div>
+
+    <div class="scan-progress" id="scanProgress" hidden>
+      <div class="scan-progress-head">
+        <span id="scanProgressText">准备中…</span>
+        <button id="btnShowCodeBoard" hidden>查看结果</button>
+        <button id="btnScanCancel">取消</button>
+      </div>
+      <div class="scan-progress-track"><div class="scan-progress-fill" id="scanProgressFill"></div></div>
+      <div class="scan-progress-sub" id="scanProgressSub"></div>
+    </div>
+
+    <section class="code-board" id="codeBoard" hidden>
+      <div class="code-board-head">
+        <span id="codeBoardTitle">批量收码结果</span>
+        <span id="codeBoardSub"></span>
+        <button id="btnCloseCodeBoard">✕</button>
+      </div>
+      <div class="code-board-list" id="codeBoardList"></div>
+    </section>
+
+    <div class="content">
+      <div class="msg-list" id="msgList">
+        <div class="placeholder">选择左侧账户查看邮件</div>
+      </div>
+      <div class="msg-view" id="msgView">
+        <div class="placeholder">选择一封邮件查看内容</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- 添加账户弹窗 -->
+<div class="modal" id="modalAdd">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>添加账户</h3>
+      <button class="modal-close" data-close="modalAdd">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="hint">
+        微软已全面禁用 Outlook 的密码登录，必须使用 <b>client_id + refresh_token</b>。
+        这些凭据保存在本机加密文件中，不会上传。
+      </div>
+      <label>邮箱地址</label>
+      <input type="text" id="fEmail" placeholder="name@outlook.com">
+      <label>Client ID</label>
+      <input type="text" id="fClientId" placeholder="应用注册的客户端 ID">
+      <label>Refresh Token</label>
+      <textarea id="fRefresh" rows="4" placeholder="刷新令牌"></textarea>
+      <div class="row">
+        <div class="col">
+          <label>分组</label>
+          <input type="text" id="fGroup" placeholder="默认">
+        </div>
+        <div class="col">
+          <label>认证端点</label>
+          <select id="fEndpoint">
+            <option value="auto">自动探测（推荐）</option>
+            <option value="consumers">consumers（个人号）</option>
+            <option value="common">common</option>
+            <option value="organizations">organizations（企业/学校号）</option>
+            <option value="live">live（旧版 MSA）</option>
+          </select>
+        </div>
+      </div>
+      <label>租户 ID（可选，仅当自动探测失败时填）</label>
+      <input type="text" id="fTenant" placeholder="如 contoso.onmicrosoft.com 或 租户 GUID">
+      <label>备注</label>
+      <input type="text" id="fNote" placeholder="可选">
+      <div class="err" id="addErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalAdd">取消</button>
+      <button class="btn btn-primary" id="btnSaveAccount">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 批量导入弹窗 -->
+<div class="modal" id="modalImport">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <h3>批量导入</h3>
+      <button class="modal-close" data-close="modalImport">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="hint">
+        每行一个账户，格式：<code>邮箱----client_id----refresh_token</code><br>
+        分隔符支持 <code>----</code>、<code>|</code>、逗号、制表符。以 <code>#</code> 开头的行会被忽略。
+      </div>
+      <label>分组</label>
+      <input type="text" id="iGroup" placeholder="导入">
+      <label>账户列表</label>
+      <textarea id="iText" rows="12" placeholder="a@outlook.com----xxxxxxxx-xxxx----M.C5xx...&#10;b@outlook.com----xxxxxxxx-xxxx----M.C5xx..."></textarea>
+      <div class="err" id="importErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalImport">取消</button>
+      <button class="btn btn-primary" id="btnDoImport">导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- 写邮件弹窗 -->
+<div class="modal" id="modalCompose">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <h3>写邮件</h3>
+      <button class="modal-close" data-close="modalCompose">✕</button>
+    </div>
+    <div class="modal-body">
+      <label>收件人（多个用逗号分隔）</label>
+      <input type="text" id="cTo" placeholder="someone@example.com">
+      <label>主题</label>
+      <input type="text" id="cSubject" placeholder="主题">
+      <label>正文</label>
+      <textarea id="cBody" rows="12" placeholder="正文内容"></textarea>
+      <div class="err" id="composeErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalCompose">取消</button>
+      <button class="btn btn-primary" id="btnSend">发送</button>
+    </div>
+  </div>
+</div>
+
+<!-- 平台选择弹窗（详情面板 / 批量共用） -->
+<div class="modal" id="modalPlatforms" hidden>
+  <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="pfTitle">
+    <div class="modal-head">
+      <h3 id="pfTitle">平台账号</h3>
+      <button class="modal-close" data-close="modalPlatforms" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="hint" id="pfSub"></div>
+
+      <div class="pf-modes" id="pfModes" hidden>
+        <label class="pf-mode"><input type="radio" name="pfMode" value="add" checked> 加上</label>
+        <label class="pf-mode"><input type="radio" name="pfMode" value="remove"> 去掉</label>
+        <label class="pf-mode"><input type="radio" name="pfMode" value="replace"> 改为</label>
+      </div>
+
+      <label>内置平台（点一下选中或取消）</label>
+      <div class="pf-grid" id="pfGrid"></div>
+
+      <label>已选</label>
+      <div class="pf-chips" id="pfChosen"></div>
+
+      <div class="pf-custom-row">
+        <input type="text" id="pfCustomInput" maxlength="40" placeholder="自定义平台名，例如 Vercel" autocomplete="off" spellcheck="false">
+        <button class="btn btn-sm" id="pfCustomAdd" type="button">添加</button>
+      </div>
+
+      <div class="err" id="pfErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalPlatforms">取消</button>
+      <button class="btn btn-primary" id="pfDone">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通用确认弹窗 -->
+<div class="modal" id="modalConfirm" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal-head">
+      <h3 id="confirmTitle">确认</h3>
+      <button class="modal-close" data-close="modalConfirm" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="confirmMessage"></p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalConfirm">取消</button>
+      <button class="btn btn-primary" id="confirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- 端点诊断弹窗 -->
+<div class="modal" id="modalDiagnose" hidden>
+  <div class="modal-box wide" role="dialog" aria-modal="true" aria-labelledby="diagTitle">
+    <div class="modal-head">
+      <h3 id="diagTitle">端点诊断</h3>
+      <button class="modal-close" data-close="modalDiagnose" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="hint" id="diagEmail"></div>
+      <div id="diagBody"></div>
+      <div class="err" id="diagErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalDiagnose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

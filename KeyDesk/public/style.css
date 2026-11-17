@@ -1,0 +1,1245 @@
+/* KeyDesk 样式
+ *
+ * 设计令牌、按钮 / 输入框 / 弹窗 / Toast 规则从 MailDesk 原样抄过来，
+ * 保持两个工具视觉一致。这里不 import、不引用别处文件：
+ * KeyDesk 是独立工具，复制一份比跨目录依赖可靠。
+ */
+
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --border: #e3e6ea;
+  --text: #1f2328;
+  --muted: #5b6470;        /* #fff 上 6.4:1 */
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --ok: #15803d;           /* 白底 4.9:1 */
+  --bad: #c02626;          /* 白底 5.9:1 */
+  --warn: #b45309;         /* 白底 4.6:1 */
+  --radius: 8px;
+
+  /* 行悬停底色。原 #eef2f8 与选中态 #dbe6fb 只差 1.12:1，鼠标扫过时
+     根本看不出"悬停"和"已选中"的区别；#f1f5fb 更浅，既保持悬停可感知，
+     又让悬停行上的 #818b9b 轨道/边框仍有 3.1:1（WCAG 1.4.11）。 */
+  --row-hover: #f1f5fb;
+  --row-active: #dbe6fb;
+  --primary-soft: #e8eefb;
+  --ok-soft-2: #dcfce7;
+  --text-3: #6b7280;
+
+  /* KeyDesk 专用：验证码大字与倒计时条 */
+  --code-bg: #0f172a;
+  --mono: ui-monospace, "Cascadia Code", Consolas, "SF Mono", monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  height: 100vh;
+  overflow: hidden;
+}
+
+[hidden] { display: none !important; }
+
+.app { display: flex; height: 100vh; }
+
+/* ---------- 侧栏 ---------- */
+.sidebar {
+  width: 320px;
+  min-width: 320px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 18px 14px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.brand-icon {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 7px;
+  font-size: 15px;
+}
+
+.side-stats {
+  display: flex;
+  gap: 8px;
+  padding: 0 18px 14px;
+}
+.stat {
+  flex: 1;
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 8px 4px;
+  text-align: center;
+}
+.stat-num { font-size: 18px; font-weight: 600; line-height: 1.2; }
+.stat-num.ok { color: var(--ok); }
+.stat-num.warn { color: var(--warn); }
+.stat-lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+.side-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 18px 14px;
+}
+
+.side-filter {
+  padding: 0 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------- 表单元素（抄自 MailDesk） ---------- */
+input[type=text], input[type=password], select, textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: #fff;
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+input[type=text]:focus, input[type=password]:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+}
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+input[type=text]:focus-visible, input[type=password]:focus-visible,
+select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
+}
+textarea { resize: vertical; line-height: 1.5; }
+
+.btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .1s, border-color .1s, transform .1s;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: #f3f4f6; }
+.btn:active:not(:disabled) {
+  transform: translateY(.5px);
+  background: #e9ecf1;
+  border-color: #d5d9e0;
+}
+/* 禁用态不用 opacity：opacity:.55 会把文字压到读不出来 */
+.btn:disabled {
+  opacity: 1;
+  background: #f1f3f6;
+  border-color: #e6e9ee;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+.btn.btn-primary:disabled {
+  background: #e8eefb;
+  border-color: #dbe4f5;
+  color: #4a6aa8;
+}
+.btn.btn-danger:disabled,
+.btn.btn-primary.btn-danger:disabled {
+  background: #f7eaea;
+  border-color: #f0dcdc;
+  color: #a97070;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+.btn-primary:active:not(:disabled) {
+  transform: translateY(.5px);
+  background: #1e40af;
+  border-color: #1e40af;
+}
+.btn-sm { padding: 6px 11px; font-size: 12px; }
+.btn.btn-danger,
+.btn.btn-primary.btn-danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+}
+.btn.btn-danger:hover:not(:disabled),
+.btn.btn-primary.btn-danger:hover:not(:disabled) {
+  background: #a01f1f;
+  border-color: #a01f1f;
+}
+
+.empty, .placeholder {
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.placeholder.error { color: var(--bad); }
+
+/* ---------- 条目列表 ---------- */
+.entry-list {
+  flex: 1;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+
+.entry-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px 10px 18px;
+  cursor: pointer;
+  border-bottom: 1px solid #f2f4f6;
+  transition: background .12s;
+  position: relative;
+}
+/* 悬停与选中必须一眼可分：旧 #eef2f8 对 #dbe6fb 只有 1.12:1，
+   鼠标停在选中行上时两态几乎重合。#f1f5fb 把底色差拉到 1.15:1。
+   注意 1.15:1 仍达不到 1.4:1 —— 这两个浅色底色之间做不到，
+   所以真正的区分手段是选中态的 3px 左侧竖条：
+   --primary 对 #dbe6fb 为 4.12:1，色觉障碍和低对比屏下都还在。 */
+.entry-item:hover { background: var(--row-hover); }
+/* 鼠标停在选中行上时，悬停底色（更浅）会盖住选中底色 ——
+   结果"当前选中项"反而在鼠标下消失。用 .active:hover 把选中底色钉死
+   （两个类级选择器，权重高于单类的 :hover，且写在 .active 之前也不被覆盖）。 */
+.entry-item.active:hover { background: var(--row-active); }
+.entry-item.active {
+  /* 底色锁死 #dbe6fb（= --row-active），不随悬停变色：
+     键盘方向键在列表里移动时，选中行必须保持稳定可辨。 */
+  background: var(--row-active);
+  /* 3px 左竖条是选中态不依赖颜色的唯一标记（色觉障碍用户 + 打印场景），
+     不能删；--primary 在 #dbe6fb 上 4.12:1，满足 1.4.11。 */
+  box-shadow: inset 3px 0 var(--primary);
+}
+.entry-item.archived { opacity: .62; }
+
+.entry-icon {
+  width: 30px; height: 30px;
+  border-radius: 7px;
+  display: grid; place-items: center;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.entry-info { flex: 1; min-width: 0; }
+.entry-issuer {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 11px 在 100% DPI 下已经接近可读下限（中文尤其糊）；12px 是正文最小档。
+   行码升到 18px 后，账号仍在 12px 才维持得住主次差。 */
+.entry-account {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 同一 issuer 下有多条记录时（3 个 GitHub 号是常态），单看 issuer 无法分辨行。
+   冲突行把账号提到能压过 issuer 的强档：13px + 正文色 + 500，
+   视线先落到"是哪个号"，再回看图标。 */
+.entry-account.conflict {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+.entry-right { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; }
+
+/* 字号层级：issuer 13px 与行内验证码只差 1.15 倍时，眼睛扫列表分不出主次。
+   18px 让"码"成为行内的视觉锚点，13px 的 issuer 退为标签。
+   tabular-nums 是必须的：等宽数字不会因 0/1/7 字形宽度不同而在每秒刷新时抖动。 */
+.entry-code {
+  font-family: var(--mono);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  user-select: all;
+}
+.entry-code.dim { color: var(--text-3); font-weight: 400; }
+
+.mini-count {
+  width: 34px; height: 4px;
+  border-radius: 2px;
+  /* 原 #e5e7eb 在白底仅 1.24:1、在 --bg 上 1.15:1，低于 WCAG 1.4.11 要求
+     非文本对比度 ≥3:1；#818b9b 白底 3.44:1、--bg 上 3.18:1、悬停行上 3.15:1。 */
+  background: #818b9b;
+  overflow: hidden;
+}
+.mini-count > i {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  transition: width .9s linear, background .2s;
+}
+.mini-count.low > i { background: var(--warn); }
+.mini-count.crit > i { background: var(--bad); }
+
+.pin-mark { color: var(--warn); font-size: 11px; }
+
+/* ---------- 主区 ---------- */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.toolbar {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+}
+.toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.toolbar-left h2 {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolbar-right { display: flex; align-items: center; gap: 8px; }
+
+.badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: #f3f4f6;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge.ok { background: #dcfce7; color: #15803d; }
+.badge.bad { background: #fdeaea; color: var(--bad); }
+.badge.warn { background: #fdf3e3; color: var(--warn); }
+.badge:empty { display: none; }
+
+.content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---------- 详情面板 ---------- */
+.detail {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 26px;
+}
+
+.code-panel {
+  background: var(--code-bg);
+  border-radius: 12px;
+  padding: 20px 24px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+.code-display {
+  font-family: var(--mono);
+  font-size: 40px;
+  font-weight: 600;
+  letter-spacing: .12em;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 6px;
+  padding: 2px 8px;
+  transition: background .15s;
+  line-height: 1.2;
+  /* 分组显示 "123 456"（A2 负责插入空格）后，字距 + 词距一起撑开才不粘连；
+     tabular-nums 保证数字每秒刷新时宽度不变，码不会左右跳。 */
+  word-spacing: .3em;
+  font-variant-numeric: tabular-nums;
+}
+.code-display:hover { background: rgba(255, 255, 255, .12); }
+.code-display:active { background: rgba(255, 255, 255, .2); }
+/* 复制成功后在原位显示"已复制"（A2 加类，1500ms 后移除）。
+   降到 26px 是因为四个汉字在 40px 字号下会撑出深色圆角面板的宽度，
+   把右侧倒计时列挤变形；26px 的中文仍比 40px 数字窄。
+   绿色 #86efac 在 --code-bg 上 12.7:1，远高于 4.5:1。 */
+.code-display.copied-inline {
+  font-size: 26px;
+  color: #86efac;
+}
+.code-meta-col { flex: 1; min-width: 0; }
+.code-hint { font-size: 12px; color: #b9c4d6; margin-bottom: 6px; }
+.code-ring {
+  height: 6px;
+  border-radius: 3px;
+  /* 原 alpha .18 在 --code-bg 上只有 1.74:1，低于 WCAG 1.4.11 的 3:1；
+     .36 提到 3.33:1。轨道必须能和深色面板分开，否则"还剩多少"无从判断。 */
+  background: rgba(255, 255, 255, .36);
+  overflow: hidden;
+}
+/* 两个选择器指向同一根条：现有 DOM 是 .code-ring > i（#ringBar），
+   A2 的改造用的类名是 .code-ring-bar。两者都覆盖，避免任一侧改名后
+   过渡规则静默失效 —— 失效的表现是倒计时条每秒硬跳一格，很显眼但不报错。 */
+.code-ring > i,
+.code-ring-bar {
+  display: block;
+  height: 100%;
+  background: #60a5fa;
+  /* 时长由 A2 按 period 算好写进 el.style.transitionDuration：
+     120 秒周期下固定 .9s 会让每秒 0.83% 的变化看起来像静止。
+     这里只声明"过渡哪个属性、用什么缓动"，绝不写死时长。
+     background-color 故意不列入 transition-property——一旦列入，
+     JS 写进来的整段时长会同时套在颜色上（120s 周期 = 3.6s 才变黄/红），
+     而跨过 3 秒/7 秒阈值时颜色本就该立刻跳变，那才是警示信号。 */
+  transition-property: width;
+  transition-timing-function: linear;
+}
+/* 阈值配色挂在容器上（.code-ring / .code-ring.low），所以改成 .code-ring-bar
+   结构后这两条依然生效；补上 > i 之外的写法只是防御。 */
+.code-ring.low > i,
+.code-ring.low .code-ring-bar { background: #fbbf24; }
+.code-ring.crit > i,
+.code-ring.crit .code-ring-bar { background: #f87171; }
+.code-secs { font-size: 12px; color: #b9c4d6; margin-top: 6px; }
+
+.section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  gap: 10px;
+}
+.section-head h3 { font-size: 13px; font-weight: 600; }
+.section-head .head-actions { display: flex; gap: 6px; }
+.section-body { padding: 14px 16px; }
+
+.field-grid {
+  display: grid;
+  grid-template-columns: 96px 1fr;
+  gap: 8px 14px;
+  font-size: 13px;
+  align-items: baseline;
+}
+.field-grid dt { color: var(--muted); font-size: 12px; }
+.field-grid dd {
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.code-mono {
+  font-family: var(--mono);
+  background: #f0f3f8;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 6px 9px;
+  font-size: 12px;
+  word-break: break-all;
+  user-select: all;
+  display: block;
+}
+
+/* ---------- 恢复码表 ---------- */
+.set-block {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+/* 原 #93b4f5 对白底 2.08:1、对 --primary-soft（set-head 底色）1.79:1，
+   边界不可辨 —— 用户看不出哪一组是"当前代"。
+   #5b8def 对白底 3.23:1、对选中组的 #e8eefb 头 2.78:1，配合原有的 2px 光晕，
+   代际边界才立得住。 */
+.set-block.current { border-color: #5b8def; box-shadow: 0 0 0 2px var(--primary-soft); }
+.set-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  background: #fafbfc;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.set-block.current .set-head { background: var(--primary-soft); }
+.set-title { font-weight: 600; font-size: 12.5px; }
+.set-sub { color: var(--muted); font-size: 11px; }
+.set-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.code-grid {
+  display: grid;
+  /* 170px 只能放下 12.5px 的码；14px + 复制区/标记区两段结构后，
+     170px 会把 "XXXX-XXXX" 挤成两行或截断，故放宽到 200px。 */
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+/* chip 拆成两个命中区（A2 输出 <div class="code-chip"> 内含
+   <button class="chip-mark"> 与 <button class="chip-copy">，顺序是标记在前、
+   复制在后；复制区 flex:1 撑满剩余宽度，所以视觉上码占主体、勾在左侧）：
+   点主体 = 复制（这是本工具的核心动作），点标记区 = 标记已用。
+   原来的单个 <button> 只能做后者，复制根本无从触发。 */
+.code-chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 14px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fff;
+  transition: background .12s, border-color .12s;
+  text-align: left;
+  font-weight: inherit;
+  color: inherit;
+  /* chip 外层保留 pointer：A2 的委托里，"不在 .chip-mark 里"的任何点击都算复制，
+     包括 chip 的 padding 和两个子块之间的 7px 间隙。
+     所以整块都可点，cursor 就该整块是 pointer；子块再各自覆盖成
+     copy（复制区）/ pointer（标记区），让具体动作更明确。 */
+  user-select: none;
+  cursor: pointer;
+}
+
+/* 复制区：占据 chip 主体。user-select: all 让"点一下"就选中整串码，
+   复制失败（剪贴板 API 不可用）时用户还能 Ctrl+C 兜底；
+   旧规则把整块设成 none，连手动选中这条后路都堵死了。
+   这里刻意不用 text-overflow: ellipsis —— 恢复码被截成
+   "abcd-ef…" 比换行糟得多：用户看到的就是"这一个码"，抄错半串的概率极高。
+   改为 overflow-wrap: anywhere，空间不够时连同连字符一起折到第二行。 */
+.code-chip .chip-copy {
+  flex: 1;
+  min-width: 0;
+  display: block;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: copy;
+  user-select: all;
+}
+
+/* 标记区：只有"这枚码用掉了没有"的开关。它是独立按钮，
+   trackUsage:false 的组只把这里 disabled，复制区永远可用。
+   标记区保持不可选中——选中的文本会把 ○/✓ 带进剪贴板，粘出来是垃圾。 */
+.code-chip .chip-mark {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ok);
+  background: transparent;
+  border: 0;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  line-height: 1;
+  /* 标记区在外层 <div> 里，默认不会继承 button 的垂直居中；
+     给固定行高 + 上下对齐，避免 ✓ 比码高半像素而看起来"浮起来"。 */
+  align-self: center;
+}
+.code-chip .chip-mark:hover:not(:disabled) { background: var(--ok-soft-2); }
+
+/* 已用时间小字：store 早就返回 usedAt，但界面上从来没人看得到"什么时候用的"，
+   判定"这枚码是不是上周刚失效"只能靠记忆。10px 不能再大，
+   否则 chip 高度会被撑过 32px，一行放不下。
+   它和 .chip-copy 是**平级**的两个 flex 子项（不是放在复制按钮内部）：
+   放进去的话这段日期会被 .used 的 line-through 一起划掉，读屏器也会把
+   "已用 · 2026/11/09"和码连成一串念出来。 */
+.code-chip .chip-used-at {
+  font-size: 10px;
+  color: var(--text-3);
+  flex-shrink: 0;
+  white-space: nowrap;
+  /* 独立按钮之外的小字，要能连日期一起选中（用户可能想把它抄进备注），
+     所以这里不设 user-select:none —— 与 .chip-copy 的 all 互不干扰。 */
+  display: inline-block;
+  margin-left: 2px;
+}
+
+/* 悬停/聚焦时边框必须能被看见才说明"可点"：
+   原 #cbd5e1 对白底 1.48:1、对新悬停底 #f1f5fb 仅 1.32:1，等于没有反馈；
+   #818b9b 对白底 3.44:1、对悬停底 3.15:1，达 1.4.11 的 3:1。
+   复制区文字加下划线：颜色之外再给一个不依赖色觉的"可点"信号。 */
+.code-chip .chip-copy:focus-visible { text-decoration: underline; text-underline-offset: 2px; }
+.code-chip:hover .chip-copy { text-decoration: underline; text-underline-offset: 2px; }
+/* chip 现在是 <div>（内部两个 <button>），用不了 :disabled；
+   但 A1/A2 是分开落地的，旧结构下 chip 仍可能是带 disabled 的 <button>，
+   所以两种表示都排掉，避免过渡期出现"禁用却高亮"的假可用态。
+   :not(.copied) 是必需的：本规则四个类级选择器的权重高于下面
+   .code-chip.copied 的两个，不排除掉的话"复制成功"的绿底会被悬停态压没。 */
+.code-chip:hover:not(:disabled):not(.disabled):not(.copied) {
+  background: var(--row-hover);
+  border-color: #818b9b;
+}
+
+/* 复制成功 1500ms 的视觉确认（A2 加类）。用底色而不是只改边框：
+   复制是高频动作，反馈要能余光扫到；ok 色 #15803d 在 #dcfce7 上 4.57:1。
+   used 也要一起写：复制一枚已用码完全合法（核对用），
+   而 .code-chip.used 在后面、权重同为 2，不显式加一级就会被它的灰底盖住。 */
+.code-chip.copied,
+.code-chip.used.copied {
+  background: var(--ok-soft-2);
+  border-color: #15803d;
+}
+
+.code-chip:disabled { cursor: default; }
+.code-chip .chip-mark:disabled { cursor: default; opacity: 1; }
+.code-chip .chip-mark:disabled:hover { background: transparent; }
+
+/* 已用态：变色 + 划掉（规格要求保留现有 .used 表现）。
+   划掉的范围收窄到"复制区"：新结构里 .chip-mark 是复制区的兄弟节点，
+   若在 .code-chip 上直接 line-through，那个 ✓/○ 开关也会被划掉 ——
+   一个"可点的开关"被画上删除线，等于告诉用户它已经失效了。
+   复制区内部的"已用 · 日期"会一起被划掉，这是有意的：
+   它记录的正是这枚已作废的码何时被用掉。
+   旧结构（chip 自身直接含文本、无 .chip-copy）保持整块划掉，行为不变。 */
+.code-chip.used {
+  text-decoration: line-through;
+  /* 已用码的文字必须仍读得清：--text-3 #6b7280 在 #f7f8fa 上 4.55:1。
+     不要降到更浅的灰——已用码仍可能被抄写核对（跨设备复用的场景真实存在）。 */
+  color: var(--text-3);
+  background: #f7f8fa;
+}
+.code-chip.used:has(.chip-copy) { text-decoration: none; }
+.code-chip.used:has(.chip-copy) .chip-copy { text-decoration: line-through; }
+.code-chip.used .chip-mark { color: var(--text-3); }
+
+.codes-hidden {
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+
+/* ---------- 通用小工具类（替代内联 style，CSP 禁内联） ---------- */
+.mt-6 { margin-top: 6px; }
+.mt-12 { margin-top: 12px; }
+.mt-14 { margin-top: 14px; }
+.self-start { align-self: flex-start; }
+.muted { color: var(--muted); }
+.btn-row { display: flex; gap: 6px; }
+.note-label { font-size: 12px; color: var(--muted); }
+.note-text {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.prompt-label { display: block; font-size: 12px; color: var(--muted); margin: 8px 0 4px; }
+/* 复制按钮兜底路径用的隐藏 textarea：用类而不是内联 style */
+.visually-hidden {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 屏幕阅读器播报区（#srStatus，A3 建元素、A2 写入）。
+   §2.1 允许"复用现有 .visually-hidden 也可"，而 §2.2 给的示例写法又正是
+   class="visually-hidden"，所以两条路都要能播报。
+   现有 .visually-hidden 是 fixed + top:-1000px + opacity:0：文本仍会进
+   a11y 树，但元素被移出视口且完全透明，实测有 AT/浏览器组合会因此跳过
+   aria-live 更新（说"不可见内容不需要播报"）。aria-live 的播报依赖
+   "节点在页面里且可感知"，离屏 1000px 不满足。
+   故 .visually-hidden[aria-live] 走标准 clip 方案：1px 盒子 + clip-path，
+   视觉上同样消失，但对 AT 而言是页内正常节点。
+   属性选择器只命中带 aria-live 的那个元素，其余 .visually-hidden 用途
+   （复制兜底 textarea）行为完全不变。 */
+.sr-status,
+.visually-hidden[aria-live] {
+  /* position 用 absolute 而非 fixed：fixed 的包含块是视口，
+     页面滚动时仍可能被判"在视口外"；absolute 落在文档流里更稳。 */
+  position: absolute !important;
+  /* .visually-hidden 的 top/left:-1000px 必须显式复位 ——
+     只改 position 不改偏移，元素会继续停在 -1000px 处，等于没改。 */
+  top: auto;
+  left: auto;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  /* clip 兼容老浏览器，clip-path 是新写法；两者同时给不冲突 */
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  /* 覆盖 .visually-hidden 的 opacity:0：置零不透明度是部分 AT 跳过播报的直接原因 */
+  opacity: 1;
+  /* 覆盖 .visually-hidden 的 pointer-events:none：播报节点不接收交互，
+     但保持默认值可以避免"整棵子树被标记为 inert"的实现差异 */
+  pointer-events: auto;
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- 录入预览卡 ----------
+   粘贴 otpauth URI 后，#parsePreview 原本只是一行 .err.muted 文本，
+   把"算法·位数·周期·当前码"挤成一句，最关键的 6 位码混在文字里看不出。
+   拆成卡片：码独占一行 32px，参数和提示各占一行 12px。 */
+.preview-card {
+  background: #f0f6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  padding: 10px 12px;
+  /* muted #5b6470 在 #f0f6ff 上 5.52:1，正文色 14.5:1，都过 4.5:1 */
+}
+.pv-meta { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.pv-code {
+  font-family: var(--mono);
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: .1em;
+  color: var(--text);
+  /* 每秒刷新的数字必须定宽：不定宽时 0/1/7 的字形宽度差会让卡片整体左右抖 */
+  font-variant-numeric: tabular-nums;
+  line-height: 1.25;
+  margin: 2px 0;
+}
+.pv-hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+/* ---------- 审计视图 ----------
+   每一行都可点（A2 绑了 click → 直接打开该条目去修），
+   所以必须有 pointer + hover，否则用户不知道这里是入口。 */
+.audit-list { display: flex; flex-direction: column; }
+.audit-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid #f2f4f6;
+  border-radius: 5px;
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background .12s;
+}
+.audit-row:last-child { border-bottom: 0; }
+.audit-row:hover { background: var(--row-hover); }
+/* A2 的行结构是 .audit-main（issuer + account）＋ .audit-badges，
+   左侧文字列必须 min-width:0 才能让长账号正常省略号截断。 */
+.audit-main { flex: 1; min-width: 0; }
+.audit-main .entry-issuer { font-size: 13px; font-weight: 500; }
+.audit-main .entry-account { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.audit-badges { display: flex; gap: 5px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.audit-badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  /* 默认档 = "要人处理"（warn）。11px 小字必须靠底色 + 深字撑对比：
+     --warn #b45309 在 #fdf3e3 上 4.57:1，达到小字 4.5:1。 */
+  background: #fdf3e3;
+  color: var(--warn);
+  border: 1px solid #f5d9a8;
+}
+/* 按 A5 的 problems 取值分档。A2 目前统一输出 .audit-badge（未带类别类名），
+   所以下面三条暂未命中；一旦 A2 补上 `audit-badge <problem>` 就自动生效。
+   留着是因为四类问题的紧急程度确实不同，全同色会让人放弃分辨。 */
+.audit-badge.no-totp,
+.audit-badge.no-recovery { background: #fdf3e3; color: var(--warn); border-color: #f5d9a8; }
+.audit-badge.stale-recovery { background: #f3f4f6; color: var(--muted); border-color: #e3e6ea; }
+.audit-badge.no-password { background: #fdeaea; color: var(--bad); border-color: #f3c7c7; }
+
+.chk {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.chk input[type=checkbox] { cursor: pointer; margin: 0; }
+
+/* ---------- 锁屏 ---------- */
+.lockscreen {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 90;
+}
+.lock-box {
+  width: 420px;
+  max-width: 100%;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 30px 32px 26px;
+  box-shadow: 0 18px 44px rgba(17, 24, 39, .10);
+}
+.lock-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.lock-sub {
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.7;
+  margin-bottom: 18px;
+}
+.lock-box label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 12px 0 6px;
+}
+.lock-box .btn { width: 100%; margin-top: 14px; }
+
+.recovery-box {
+  background: var(--ok-soft-2);
+  border: 1px solid #a7e0b8;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 12px 0 4px;
+}
+.recovery-box .rk-label {
+  font-size: 11px;
+  color: #166534;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.recovery-key {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  color: #14532d;
+  word-break: break-all;
+  user-select: all;
+  line-height: 1.6;
+}
+.recovery-warn {
+  font-size: 11.5px;
+  color: #7c2d12;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  padding: 9px 11px;
+  line-height: 1.6;
+  margin-top: 10px;
+}
+
+/* ---------- 恢复密钥回填确认 ----------
+ *
+ * 这一步的存在意义：原来的"我已保存，进入"是零摩擦按钮，用户 100% 直接点过。
+ * 而恢复密钥在这里关掉后就再也看不到 —— 三个月后真要恢复时才发现当时没抄，
+ * 那时库已建好、没有任何补救路径。回填 3 段把"看过"变成"抄过"。
+ * 它必须看起来像"一个要动手填的任务"，不能像可选提示：所以给独立边框和
+ * 内边距，与上面的密钥展示块在视觉上分开。
+ */
+.rec-confirm-set {
+  margin: 12px 0 0;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fafbfc;
+  /* fieldset 默认 min-width:min-content，长密钥会把整个锁屏框撑破 */
+  min-width: 0;
+}
+.rec-confirm-legend {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  padding: 0 4px;
+}
+.rec-confirm-hint {
+  margin: 4px 0 10px;
+  line-height: 1.6;
+}
+.rec-confirm-inputs {
+  gap: 8px;
+  /* 三个格子各自定宽，不要 flex:1 —— 让第 3 段（只有 2 位）看起来和
+     前两段一样宽，会误导用户以为还该多填两位。 */
+}
+.rec-confirm-input {
+  width: 76px;
+  padding: 7px 9px;
+  font-family: var(--mono);
+  font-size: 14px;
+  letter-spacing: .12em;
+  text-align: center;
+  text-transform: uppercase;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+}
+/* 第 3 段只有 2 位，窄一点，长度差异本身就是"该填几位"的提示 */
+.rec-confirm-input[data-seg="3"] { width: 52px; }
+.rec-confirm-input:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+  border-color: var(--primary);
+}
+.rec-confirm-actions {
+  margin-top: 12px;
+  gap: 8px;
+}
+/* 两个按钮等宽：主按钮更大时用户会更倾向于点它碰运气，
+   而这里恰恰需要人真的去看一眼密钥。 */
+.rec-confirm-actions .btn { flex: 1; }
+
+/* ---------- 弹窗（抄自 MailDesk） ---------- */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, .45);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+.modal.show { display: flex; }
+
+.modal-box {
+  background: var(--panel);
+  border-radius: 10px;
+  width: 460px;
+  max-width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .18);
+}
+.modal-box.wide { width: 640px; }
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h3 { font-size: 15px; font-weight: 600; }
+.modal-close {
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.modal-close:hover { background: #f3f4f6; color: var(--text); }
+
+.modal-body {
+  padding: 18px 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.modal-body label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.modal-body .hint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  background: #f0f6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+}
+.modal-body code {
+  background: #e8eef8;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.row { display: flex; gap: 12px; }
+.col { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+
+.err {
+  font-size: 12px;
+  color: var(--bad);
+  min-height: 16px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+
+#confirmMessage {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+/* QR 弹窗内容居中 */
+.qr-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.qr-wrap svg { width: 260px; height: 260px; image-rendering: pixelated; }
+.qr-uri {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  background: #f7f8fa;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 8px 10px;
+  word-break: break-all;
+  user-select: all;
+  width: 100%;
+}
+
+/* 二维码生成失败时的兜底提示。
+   触发条件是 otpauth URI 超过 QR 的 210 字节容量——在字段长度合法
+   （64 字符中文 issuer + 128 字符 account）时确实会发生。 */
+.qr-fallback-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 5px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  user-select: none;
+}
+.qr-fallback-hint[hidden] { display: none; }
+/* 没有二维码时，URI 文本要更醒目（它是唯一的迁移途径） */
+.qr-host.qr-fallback + .qr-fallback-hint + .qr-uri {
+  font-size: 12px;
+  color: var(--text);
+  background: #fff;
+}
+
+/* ---------- Toast ---------- */
+.toast {
+  position: fixed;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%) translateY(16px);
+  background: #111827;
+  color: #fff;
+  font-size: 13px;
+  padding: 10px 18px;
+  border-radius: 7px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s, transform .2s;
+  z-index: 200;
+  max-width: 80vw;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.err { background: var(--bad); }
+.toast.warn { background: var(--warn); }
+.toast.ok { background: #15803d; }
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb {
+  background: #d6dae0;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #bcc2cb; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* 窄屏：侧栏收窄，验证码字号降一档 */
+@media (max-width: 900px) {
+  .sidebar { width: 260px; min-width: 260px; }
+  .code-display { font-size: 30px; }
+  .detail { padding: 16px; }
+}
+
+/* ---------- 打印 ----------
+ * 只用来打印恢复码清单：用户要把它抄到纸上 / 存进保险箱。
+ * 屏幕上的深色面板、选中高亮、悬停态在纸上全是浪费墨，
+ * 而且白字深底在省墨模式下会直接变空白 —— 所以打印态一律反黑。
+ */
+
+@page {
+  /* 20mm 是激光打印机不可打印边距的安全值（多数机型 4-5mm，
+     但给装订留余量；恢复码清单会被反复翻看，边角压字很致命）。 */
+  margin: 20mm;
+}
+
+/* .print-only / .no-print 必须在屏幕态就生效，
+   不能只写在 @media print 里 —— 否则打印容器会先以普通块在屏幕上显示出来。
+   这里刻意不加 !important：A3 的 #printRoot 同时带 hidden 属性，
+   文件顶部 [hidden]{display:none!important} 应当照样把它藏住；
+   一旦这里也加 !important，同权重下靠后的本规则反而会把 hidden 顶掉，
+   导致打印容器在屏幕上露出来。@media print 里再加 !important 覆盖 [hidden] —
+   A2 的 printRecovery 实际并不移除 hidden，全靠那条覆盖才打得出来。 */
+.print-only { display: none; }
+
+@media print {
+  /* 打印时窗口尺寸、滚动、背景全部让位于纸面排版 */
+  html, body {
+    height: auto;
+    overflow: visible;
+    background: #fff;
+    color: #000;
+    font-size: 11pt;
+  }
+  .no-print { display: none !important; }
+  .print-only { display: block !important; }
+
+  /* #printRoot 是 body 的直接子节点（A3 已确认，见 index.html 注释），
+     所以只隐藏屏幕外壳就够，不需要为"嵌套在 .detail 里"做额外兼容。
+     深色 code-panel 打印出来是整块黑底（省墨模式下反而整片空白），
+     侧栏/工具栏/弹窗/toast/锁屏也都不该出现在纸上。
+     侧栏的子块（brand/side-stats/side-actions/side-filter/entry-list）
+     不必单独列出：它们的父级已经 display:none，整棵子树都不会布局。 */
+  .lockscreen,
+  .modal,
+  .toast,
+  .sidebar,
+  .toolbar,
+  .detail { display: none !important; }
+
+  /* .app 是 flex + 100vh + overflow:hidden 的壳：打印时要解除这些约束，
+     否则纸面只会有"第一页"那么多内容，剩下的码被 overflow 裁掉。
+     这里不隐藏 .app —— #printRoot 就在它外面，藏掉反而可能连 .app
+     自身占位都清不干净。 */
+  .app {
+    display: block !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+  body { height: auto; overflow: visible; }
+
+  /* [hidden] 的规则带 !important（文件顶部），屏幕态要靠它藏住 #printRoot；
+     但打印时必须翻开，否则整份清单是空的。同带 !important + 更靠后即可覆盖。 */
+  .print-only[hidden] { display: block !important; }
+
+  /* 两列排码：A4 宽 210mm - 40mm 边距 = 170mm，两列各约 82mm，
+     足够放下 "699w-5vgb" 这种 4+4 格式且留出勾选框。
+     A5 输出的是 <ol class="print-codes"><li class="print-code">…，
+     ol 默认有 40px 左内边距和序号，纸上不需要两层编号（每码末尾已有 print-index）。 */
+  .print-codes {
+    font-size: 14pt;
+    line-height: 1.8;
+    columns: 2;
+    column-gap: 10mm;
+    font-family: var(--mono);
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .print-code {
+    /* 不许一个码被拆到两栏/两页：拆开后两半都对不上，等于毁掉一枚码。
+       display:flex 让 ☐ / 码 / 序号 / 已用日期 四段保持同行基线。 */
+    display: flex;
+    align-items: baseline;
+    gap: 1.5mm;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    margin-bottom: 2mm;
+    /* 两列之间靠 column-gap 已经留白，这里只需要右侧余量防止贴栏 */
+    padding-right: 3mm;
+  }
+  /* ☐ 是纸上标记"已用"的唯一手段，必须与码同宽对齐 ——
+     宽度不一致时几十个勾选框会呈锯齿状，手写时容易点错行。 */
+  .print-mark { flex: 0 0 1.2em; }
+  .print-value {
+    font-weight: 700;
+    letter-spacing: .04em;
+    /* 码本身绝不折行：折了就会出现"上一行结尾 + 下一行开头"拼错的抄写事故 */
+    white-space: nowrap;
+  }
+  /* 序号与"已用"标记退为辅助信息：灰色在纸上可能印不出来，
+     所以这里只用小字号 + 右对齐，不依赖颜色。 */
+  .print-index { font-size: 9pt; margin-left: auto; }
+  .print-used { font-size: 9pt; }
+  /* 已用的码划掉：纸面清单是要被反复核对的，
+     没有划线的话"这个码用过没有"只能靠人去比对日期。 */
+  .print-code.used .print-value { text-decoration: line-through; }
+
+  /* 打印页眉/页脚：纸上的清单没有"生成于"就无从判断是否过期 */
+  .print-head { font-family: inherit; margin-bottom: 6mm; }
+  .print-head h2 { font-size: 13pt; font-weight: 600; margin: 0 0 1mm; }
+  .print-head p { font-size: 10pt; margin: 0; }
+  .print-foot {
+    margin-top: 8mm;
+    padding-top: 3mm;
+    border-top: 1px solid #000;
+    font-size: 10pt;
+  }
+
+  /* 链接/码一律反黑，避免打印机把彩色转成浅灰导致 3:1 都不到 */
+  a, .print-codes, .print-head, .print-foot { color: #000 !important; text-decoration: none !important; }
+}

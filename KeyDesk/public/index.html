@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KeyDesk</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 屏幕阅读器播报区（A2 往这里写，配合 aria-live 播报"已复制""已标记"这类
+     没有页面结构变化、读屏用户完全感知不到的操作结果）。
+     放在 body 最前面而不是放进某个视图里：锁屏 / 主界面来回切换时这个节点
+     必须一直存在，否则 aria-live 区域被移出 DOM 后首次播报会丢失。
+     aria-atomic 让读屏器整段重读；A2 会用零宽空格破重来强制重复播报。 -->
+<div id="srStatus" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+
+<!-- ============ 锁屏 ============ -->
+<div class="lockscreen" id="lockscreen">
+  <div class="lock-box">
+    <div class="lock-brand">
+      <span class="brand-icon">🔑</span>
+      <span>KeyDesk</span>
+    </div>
+    <div class="lock-sub" id="lockSub">正在检查密钥库…</div>
+
+    <!-- 首次初始化 -->
+    <form id="formSetup" hidden>
+      <label for="setupPass">设置主口令</label>
+      <!-- 口令框 + 可见性切换。长口令在 password 框里输错一个字符，
+           用户无法自查，只能整串删掉重来；建库这一步尤其致命，
+           因为此时还没有恢复密钥兜底（恢复密钥正是下一步才生成的）。
+           按钮默认 hidden：A2 接好逻辑前不显示，避免出现"点了没反应"的死按钮
+           （无内联脚本，见 app.js 文件头 CSP 说明）。
+           不放进 .row/.col：.lock-box .btn 是 width:100% + margin-top:14px，
+           塞进横向 flex 行里会把输入框挤扁；单独一行更稳。 -->
+      <input type="password" id="setupPass" autocomplete="new-password" placeholder="至少 8 个字符" aria-describedby="setupCapsWarn">
+      <div class="set-sub mt-6" id="setupCapsWarn" role="status" aria-live="polite" hidden>大写锁定已开启</div>
+      <button class="btn" type="button" id="btnToggleSetupPass" aria-label="显示口令" aria-pressed="false" hidden>显示口令</button>
+      <label for="setupPass2">再输一遍确认</label>
+      <input type="password" id="setupPass2" autocomplete="new-password" placeholder="重复口令" aria-describedby="setupCapsWarn2">
+      <div class="set-sub mt-6" id="setupCapsWarn2" role="status" aria-live="polite" hidden>大写锁定已开启</div>
+      <div class="hint mt-12">
+        口令只用来加密本机文件，不会上传。忘记口令只能用恢复密钥解锁，
+        两者都丢则数据无法找回。
+      </div>
+      <button class="btn btn-primary" type="submit" id="btnSetup">创建密钥库</button>
+      <div class="err" id="setupErr"></div>
+    </form>
+
+    <!-- 用恢复密钥解锁 -->
+    <form id="formRecovery" hidden>
+      <label for="recKey">恢复密钥</label>
+      <input type="text" id="recKey" autocomplete="off" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX-XX" spellcheck="false">
+      <button class="btn btn-primary" type="submit" id="btnRecovery">用恢复密钥解锁</button>
+      <button class="btn" type="button" id="btnBackToPass">返回口令解锁</button>
+      <div class="err" id="recoveryErr"></div>
+    </form>
+
+    <!-- 正常解锁 -->
+    <form id="formUnlock" hidden>
+      <label for="unlockPass">主口令</label>
+      <!-- 同 setupPass：解锁是每天都做的事，一个字符打错就是"口令错误"，
+           用户没有任何办法确认自己输的是什么。Caps Lock 是这类错误最常见的成因。 -->
+      <input type="password" id="unlockPass" autocomplete="current-password" placeholder="输入主口令" aria-describedby="unlockCapsWarn">
+      <div class="set-sub mt-6" id="unlockCapsWarn" role="status" aria-live="polite" hidden>大写锁定已开启</div>
+      <button class="btn" type="button" id="btnToggleUnlockPass" aria-label="显示口令" aria-pressed="false" hidden>显示口令</button>
+      <button class="btn btn-primary" type="submit" id="btnUnlock">解锁</button>
+      <button class="btn" type="button" id="btnToRecovery">用恢复密钥解锁</button>
+      <div class="err" id="unlockErr"></div>
+    </form>
+
+    <!-- 初始化完成后展示恢复密钥（只有这一次） -->
+    <div id="setupDone" hidden>
+      <div class="recovery-box">
+        <div class="rk-label">恢复密钥（只显示这一次）</div>
+        <div class="recovery-key" id="newRecoveryKey"></div>
+      </div>
+      <div class="recovery-warn">
+        立刻抄到纸上或存进离线密码管理器。这是口令忘记时唯一的后路，
+        关闭后无法再查看。
+      </div>
+
+      <!-- 强制回填确认（Apple 的做法：support.apple.com/HT208072
+           "To complete setup, confirm your recovery key."）。
+           原来的「我已保存，进入」是个零摩擦按钮，用户 100% 会直接点过去 ——
+           那是这个流程里唯一真正失败的地方：三个月后真的需要它时，
+           才发现当时根本没抄下来，而这时已经没有任何办法补救。
+           回填 3 段（共 7 段）把"看过"变成"抄过"，代价约 20 秒。
+           单独包一个 div 而不是直接铺在 setupDone 里：A2 要能独立地
+           隐藏它、在「重新显示」时清空它，不影响上面的密钥展示。 -->
+      <div id="confirmRecovery" hidden>
+        <!-- fieldset + legend 而不是 div + 视觉标题：读屏器会把 legend 作为
+             每个输入框的组上下文重复播报（"确认你已抄下恢复密钥 第 2 段"），
+             用户不会听到三个孤零零的、不知道在填什么的输入框。
+             这里没有加任何内联 style：CSP 是 style-src 'self'，内联属性会被
+             浏览器直接丢掉（等于没写），.rec-confirm-* 的视觉由 style.css（A1）负责。 -->
+        <fieldset class="rec-confirm-set">
+          <legend class="rec-confirm-legend">
+            确认你已抄下恢复密钥
+          </legend>
+          <p class="set-sub rec-confirm-hint" id="confirmRecoveryHint">
+            请输入恢复密钥的第 2、5 段（各 4 位）和第 7 段（2 位）。
+          </p>
+          <div class="row rec-confirm-inputs" id="confirmRecoveryInputs">
+            <!-- 每个输入框都是定长 4 位：
+                 · maxlength="4"：HTML 自带硬上限，粘贴一整把密钥进第一个格子
+                   也只会留 4 位（不会把 26 位全塞进来后才发现对不上）。
+                 · autocapitalize="characters" + autocorrect="off" —— iOS 键盘
+                   直接出大写；桌面/安卓端由 A2 的"输入即转大写"兜底，两端都覆盖。
+                   不用 inputmode：Base32 是字母+数字混合，任何虚拟键盘预设
+                   （numeric / latin 之流）都比默认的字母键盘更糟。
+                 · autocomplete="off" —— 这不是密码，任何密码管理器都不该
+                   把它当成凭据来存或来自动填充（填进来的一定是错的）。
+                 · spellcheck="false" —— 别给 Base32 画红波浪线。
+                 · pattern 只做"4 位 Base32"的形式提示，不替代 JS 的归一化校验
+                   （大小写、易混字符的容忍由 app.js 决定）。
+                 · aria-label 带段号：legend 说的是"确认"，label 说的是"第几段"，
+                   两者叠起来读屏用户才知道当前在第几个格子。 -->
+            <input type="text" class="rec-confirm-input" id="confirmRecSeg1" data-seg="1"
+                   maxlength="4" autocapitalize="characters" autocorrect="off"
+                   autocomplete="off" spellcheck="false"
+                   pattern="[A-Za-z2-7]{4}" aria-label="恢复密钥第 2 段">
+            <input type="text" class="rec-confirm-input" id="confirmRecSeg2" data-seg="2"
+                   maxlength="4" autocapitalize="characters" autocorrect="off"
+                   autocomplete="off" spellcheck="false"
+                   pattern="[A-Za-z2-7]{4}" aria-label="恢复密钥第 5 段">
+            <input type="text" class="rec-confirm-input" id="confirmRecSeg3" data-seg="3"
+                   maxlength="2" autocapitalize="characters" autocorrect="off"
+                   autocomplete="off" spellcheck="false"
+                   pattern="[A-Za-z2-7]{2}" aria-label="恢复密钥第 7 段">
+          </div>
+          <!-- role="alert"：回填失败是"用户以为抄对了、其实没有"的时刻，
+             这一行必须被读屏器主动念出来，而不是等用户 Tab 过去才发现。 -->
+          <div class="err" id="confirmRecoveryErr" role="alert" aria-live="assertive"></div>
+        </fieldset>
+
+        <!-- 逃生门（研究报告明确要求）：否则抄错一次的用户会永久卡在
+             初始化界面 —— 此时库已建好、密钥已生成，但界面进不去。 -->
+        <div class="btn-row rec-confirm-actions">
+          <button class="btn" type="button" id="btnShowRecoveryAgain">重新显示恢复密钥</button>
+          <button class="btn btn-primary" type="button" id="btnConfirmRecovery">确认并进入</button>
+        </div>
+      </div>
+
+      <!-- 保留原按钮与 id：A2 仍在绑 #btnSetupDone，删掉会让事件绑定抛错。
+           但降级成次要动作（不带 btn-primary）：确认框已经出现时，主按钮
+           必须是「确认并进入」，否则用户会习惯性点最显眼的那个，
+           整个强制回填就白做了。 -->
+      <button class="btn" type="button" id="btnSetupDone">我已保存，进入</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 主界面 ============ -->
+<div class="app" id="app" hidden>
+
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-icon">🔑</span>
+      <span>KeyDesk</span>
+    </div>
+
+    <div class="side-stats">
+      <div class="stat">
+        <div class="stat-num" id="statEntries">0</div>
+        <div class="stat-lbl">条目</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num ok" id="statCodes">0</div>
+        <div class="stat-lbl">可用恢复码</div>
+      </div>
+      <div class="stat">
+        <div class="stat-num warn" id="statStale">0</div>
+        <div class="stat-lbl">需更新</div>
+      </div>
+    </div>
+
+    <div class="side-actions">
+      <button class="btn btn-primary" id="btnAdd">＋ 新增条目</button>
+      <button class="btn" id="btnExport">导出 otpauth</button>
+      <!-- 审计入口。侧栏那个"需更新"数字只是数量：看得见"有 3 条要处理"
+           却没有任何办法知道是哪 3 条，等于没有告警。这个按钮把数量变成名单。
+           A2 用 $('btnAudit') 绑定（找不到时退回点 #statStale），
+           所以 id 必须是 btnAudit。 -->
+      <button class="btn" id="btnAudit" title="列出缺少 TOTP 密钥、缺少恢复码或恢复码已过期的条目">审计缺失项</button>
+    </div>
+
+    <div class="side-filter">
+      <!-- 用 aria-label 而不是外露的可见标签：侧栏已经很窄，多一行文字标签会把
+           搜索框挤下去；placeholder 只对看得见的人有效，读屏器需要真正的名字。
+           id 保持 search 不动（A2 用 $('search') 绑定 / 键聚焦与 input 事件）。 -->
+      <input type="text" id="search" placeholder="搜索名称 / 账号 / 标签…" aria-label="搜索条目">
+      <select id="groupFilter" aria-label="按分组筛选"><option value="">全部分组</option></select>
+      <label class="chk">
+        <input type="checkbox" id="chkArchived"> 显示已归档
+      </label>
+    </div>
+
+    <!-- 审计结果区（A2 的 showAudit() 直接往这里写 innerHTML）。
+         **必须放在 #entryList 之前**：.entry-list 是 flex:1 + overflow-y:auto，
+         会吃掉侧栏全部剩余高度；放在它后面的兄弟节点高度为 0，审计结果虽然
+         写进去了却永远看不见。
+         不加 hidden、也不套带标题的壳，理由有两条：
+         1. showAudit() 只填内容、不负责把容器打开。带 hidden 的容器会被写进内容
+            却始终不可见，用户点「审计缺失项」后界面毫无反应 ——
+            比"没有这个功能"更糟（会以为按钮坏了）。
+         2. 标题栏 / 「收起」按钮都需要 JS 配合，而 app.js 不由我改；
+            加一个点了没反应的按钮是骗人的 UI。
+         空容器无 padding、无子节点，高度为 0，所以默认完全不可见；有结果就自然长出。
+         role="region" + aria-label 让读屏用户知道这块是审计结果；
+         不加 aria-live —— 每次生成都整段重读会很吵。 -->
+    <div id="auditList" role="region" aria-label="审计结果"></div>
+
+    <div class="entry-list" id="entryList">
+      <div class="empty">还没有条目<br><small>点击「新增条目」开始</small></div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <h2 id="currentTitle">选择一个条目</h2>
+        <span class="badge" id="currentBadge" role="status" aria-live="polite"></span>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-sm" id="btnLock">锁定</button>
+        <button class="btn btn-sm" id="btnSettings">设置</button>
+      </div>
+    </div>
+
+    <div class="detail" id="detail">
+      <div class="placeholder">选择左侧条目查看详情</div>
+    </div>
+  </main>
+</div>
+
+<!-- ============ 新增 / 编辑条目 ============ -->
+<div class="modal" id="modalEntry">
+  <div class="modal-box wide">
+    <div class="modal-head">
+      <h3 id="entryModalTitle">新增条目</h3>
+      <button class="modal-close" data-close="modalEntry" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="hint" id="entryHint">
+        可以直接粘贴 <code>otpauth://</code> URI 或裸 Base32 密钥，其余字段会自动填好。
+      </div>
+
+      <label for="fOtpauth">粘贴 otpauth URI 或 Base32 密钥（可选）</label>
+      <input type="text" id="fOtpauth" placeholder="otpauth://totp/GitHub:alice@x.com?secret=... 或 JBSWY3DPEHPK3PXP" spellcheck="false" autocomplete="off">
+      <button class="btn btn-sm self-start" type="button" id="btnParse">解析并填入</button>
+
+      <div class="row">
+        <div class="col">
+          <label for="fType">类型</label>
+          <select id="fType">
+            <option value="totp">TOTP（动态验证码）</option>
+            <option value="recovery-only">仅恢复码</option>
+            <option value="note">纯备注</option>
+          </select>
+        </div>
+        <div class="col">
+          <label for="fGroup">分组</label>
+          <input type="text" id="fGroup" placeholder="如 GitHub">
+        </div>
+      </div>
+
+      <div class="row">
+        <div class="col">
+          <label for="fIssuer">名称 *</label>
+          <input type="text" id="fIssuer" placeholder="GitHub" maxlength="64">
+        </div>
+        <div class="col">
+          <label for="fAccount">账号</label>
+          <input type="text" id="fAccount" placeholder="alice@x.com" maxlength="128">
+        </div>
+      </div>
+
+      <label for="fSecret">TOTP 密钥（Base32）</label>
+      <input type="text" id="fSecret" placeholder="JBSWY3DPEHPK3PXP" spellcheck="false" autocomplete="off">
+
+      <div class="row">
+        <div class="col">
+          <label for="fAlgo">算法</label>
+          <select id="fAlgo">
+            <option value="SHA1">SHA1（默认）</option>
+            <option value="SHA256">SHA256</option>
+            <option value="SHA512">SHA512</option>
+          </select>
+        </div>
+        <div class="col">
+          <label for="fDigits">位数</label>
+          <select id="fDigits">
+            <option value="6">6 位</option>
+            <option value="8">8 位</option>
+          </select>
+        </div>
+        <div class="col">
+          <label for="fPeriod">周期（秒）</label>
+          <input type="text" id="fPeriod" value="30" maxlength="3">
+        </div>
+      </div>
+      <div class="err muted" id="parsePreview"></div>
+
+      <label for="fNote">备注</label>
+      <textarea id="fNote" rows="2" placeholder="可选" maxlength="2000"></textarea>
+
+      <label for="fRecoveryText">恢复码（每行一个，可留空）</label>
+      <textarea id="fRecoveryText" rows="4" placeholder="abcd-efgh&#10;ijkl-mnop" spellcheck="false"></textarea>
+
+      <div class="err" id="entryErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalEntry">取消</button>
+      <button class="btn btn-primary" id="btnSaveEntry">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 二维码 ============ -->
+<div class="modal" id="modalQr">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>扫描添加到手机</h3>
+      <button class="modal-close" data-close="modalQr" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="qr-wrap">
+        <div id="qrHost"></div>
+        <div class="qr-fallback-hint" id="qrFallback" hidden>
+          条目信息过长，无法生成二维码。请复制下面的文本密钥，在验证器 App 里用
+          「手动输入」或「粘贴 URI」的方式添加。
+        </div>
+        <div class="qr-uri" id="qrUri"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="btnCopyQrUri">复制文本密钥</button>
+      <button class="btn" data-close="modalQr">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 设置 ============ -->
+<div class="modal" id="modalSettings">
+  <div class="modal-box">
+    <div class="modal-head">
+      <h3>设置</h3>
+      <button class="modal-close" data-close="modalSettings" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <label for="fIdle">空闲自动锁定（秒，0 = 永不）</label>
+      <input type="text" id="fIdle" placeholder="900">
+      <button class="btn btn-sm self-start" type="button" id="btnSaveIdle">保存</button>
+
+      <div class="hint mt-14" id="vaultInfo"></div>
+      <!-- 加密导出备份包。README 自己承认"没做：导出为加密备份包"，
+           于是用户想留第二份副本只能拷 vault.enc —— 而 .bak.1/.2/.3 全在
+           同一磁盘同一目录，磁盘一坏全没。明文 otpauth 导出不能代替：
+           它把 TOTP 密钥摊成明文，落地就是一次泄露。
+           口令由弹窗单独向用户索取（A2 的 promptDialog），这里只提供入口。 -->
+      <button class="btn btn-sm self-start mt-6" type="button" id="btnExportEncrypted"
+              title="导出带口令的加密备份包，可拷到别的磁盘离线保存">导出加密备份包</button>
+
+      <label for="fOldPass">修改主口令</label>
+      <input type="password" id="fOldPass" autocomplete="current-password" placeholder="当前口令" aria-describedby="oldPassCapsWarn">
+      <div class="set-sub" id="oldPassCapsWarn" role="status" aria-live="polite" hidden>大写锁定已开启</div>
+      <!-- 新口令这里是全应用最不能打错的一处：输错了不会报错，
+           等下次锁屏才发现口令不是自己以为的那个。给切换按钮而不只给提示位。 -->
+      <input type="password" id="fNewPass" autocomplete="new-password" placeholder="新口令（至少 8 个字符）"
+             aria-label="新口令" aria-describedby="newPassCapsWarn">
+      <div class="set-sub" id="newPassCapsWarn" role="status" aria-live="polite" hidden>大写锁定已开启</div>
+      <button class="btn btn-sm self-start" type="button" id="btnToggleNewPass" aria-label="显示新口令" aria-pressed="false" hidden>显示新口令</button>
+      <button class="btn btn-sm self-start" type="button" id="btnChangePass">修改口令</button>
+
+      <label for="fRegenPass">重新生成恢复密钥</label>
+      <input type="password" id="fRegenPass" autocomplete="current-password" placeholder="输入当前口令确认" aria-describedby="regenPassCapsWarn">
+      <div class="set-sub" id="regenPassCapsWarn" role="status" aria-live="polite" hidden>大写锁定已开启</div>
+      <button class="btn btn-sm self-start" type="button" id="btnRegenRecovery">生成新的恢复密钥</button>
+
+      <div class="err" id="settingsErr"></div>
+      <div id="settingsRecovery" hidden>
+        <div class="recovery-box">
+          <div class="rk-label">新的恢复密钥（只显示这一次）</div>
+          <div class="recovery-key" id="regenRecoveryKey"></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalSettings">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 通用确认 ============ -->
+<div class="modal" id="modalConfirm">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="modal-head">
+      <h3 id="confirmTitle">确认</h3>
+      <button class="modal-close" data-close="modalConfirm" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="confirmMessage"></p>
+      <div class="err" id="confirmErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalConfirm">取消</button>
+      <button class="btn btn-primary" id="confirmOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- ============ 打印视图 ============ -->
+<!-- A5 的 print.recovery 返回一段 HTML 片段，A2 把它塞进这里再 window.print()。
+     放在 .app 之外、body 的直接子节点：.app 是 flex + height:100vh + overflow
+     布局，打印样式里必须逐个隐藏侧栏/工具栏/详情，如果把打印内容嵌在 .app 里，
+     任何一处漏隐藏都会把纸面排版挤歪（A1 的注释里已经专门为此留了兼容）。
+     屏幕态靠 .print-only + [hidden] 双重藏住；打印态 A1 有
+     `.print-only[hidden] { display:block !important }`（在 @media print 里）
+     专门翻开它 —— 所以 A2 只写 innerHTML、不必去动 hidden 属性，打印照样出内容。
+     aria-hidden="true" 同理只作用于屏幕（读屏不该念出藏在屏幕外的明文码）。 -->
+<div id="printRoot" class="print-only" hidden aria-hidden="true"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

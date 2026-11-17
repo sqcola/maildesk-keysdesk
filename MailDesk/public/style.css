@@ -1,0 +1,1803 @@
+:root {
+  /* 界面只有浅色一套配色。声明 color-scheme: light 是为了让 Chrome 的
+   * Auto Dark（以及强制反色扩展）知道这是刻意设计的浅色界面，不要去
+   * 反色——反色后 chip 的 12% 浅底会被翻成深底，而 --pf-fg 是深色文字，
+   * 两者叠在一起就变成深底深字，对比度直接崩掉。 */
+  color-scheme: light;
+
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --border: #e3e6ea;
+  --text: #1f2328;
+  --muted: #5b6470;        /* 原 #6b7280 在 #fff 上对比度 4.83:1，压到 4.5 边缘；#5b6470 是 6.4:1 */
+  --primary: #2563eb;
+  --primary-hover: #1d4ed8;
+  --ok: #15803d;           /* 原 #16a34a 白底对比度 3.3:1 不达标；#15803d 是 4.9:1 */
+  --bad: #c02626;          /* 原 #dc2626 是 4.5 边缘；#c02626 是 5.9:1 */
+  --warn: #b45309;         /* 原 #d97706 是 2.9:1 不达标；#b45309 是 4.6:1 */
+  --radius: 8px;
+
+  /* 列表行的 hover / 选中：原来两者只差 1.048:1，几乎分不出来 */
+  --row-hover: #eef2f8;
+  --row-active: #dbe6fb;
+  /* 统计数字变化时的高亮底色 */
+  --primary-soft: #e8eefb;
+  /* 复制成功的浅绿底（深绿字在上面对比度 > 7:1） */
+  --ok-soft-2: #dcfce7;
+  /* 第三级文字：比 --muted 弱，但仍在白底 4.8:1 以上 */
+  --text-3: #6b7280;
+}
+
+/* 尊重系统的"减少动态效果"设置 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.app { display: flex; height: 100vh; }
+
+/* ---------- 侧栏 ---------- */
+.sidebar {
+  width: 300px;
+  min-width: 300px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 18px 14px;
+  font-size: 16px;
+  font-weight: 600;
+}
+.brand-icon {
+  width: 28px; height: 28px;
+  display: grid; place-items: center;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 7px;
+  font-size: 15px;
+}
+
+.side-stats {
+  display: flex;
+  gap: 8px;
+  padding: 0 18px 14px;
+}
+.stat {
+  flex: 1;
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 8px 4px;
+  text-align: center;
+}
+.stat-num { font-size: 18px; font-weight: 600; line-height: 1.2; }
+.stat-num.ok { color: var(--ok); }
+.stat-num.bad { color: var(--bad); }
+/* "异常 0" 恒为红色会让整体看起来一直在报错；0 时退成中性色 */
+.stat-num.bad.zero { color: var(--muted); }
+.stat-lbl { font-size: 11px; color: var(--muted); margin-top: 2px; }
+/* 统计数字变化时的一次性高亮（400ms 后由脚本移除 .changed） */
+.stat-num.changed {
+  background: var(--primary-soft);
+  border-radius: 4px;
+}
+
+.side-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 18px 14px;
+}
+
+.side-filter {
+  padding: 0 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------- 表单元素 ---------- */
+input[type=text], select, textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: #fff;
+  /* 不要用 outline:none 抹掉焦点环——键盘用户会完全看不出焦点在哪。
+     这里改成只在鼠标操作时隐藏、键盘操作时显示可见的环。 */
+  outline: none;
+  transition: border-color .15s, box-shadow .15s;
+}
+input[type=text]:focus, select:focus, textarea:focus {
+  border-color: var(--primary);
+}
+/* 键盘聚焦时给出清晰、高对比的焦点环（鼠标点击不出现，避免视觉噪音）。
+   注意：这里不设 border-radius——全局设圆角会让按钮、输入框、行
+   在聚焦的瞬间形状突变（从各自的圆角跳成 4px），是明显的视觉瑕疵。 */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+input[type=text]:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, .18);
+}
+textarea { resize: vertical; line-height: 1.5; }
+
+.btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background .1s, border-color .1s, transform .1s;
+  white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: #f3f4f6; }
+/* 按下反馈：只做 0.5px 位移 + 背景加深，绝不做缩放（工具栏会跟着抖） */
+.btn:active:not(:disabled) {
+  transform: translateY(.5px);
+  background: #e9ecf1;
+  border-color: #d5d9e0;
+}
+
+/* 禁用态：不用 opacity。
+ * opacity:.55 会把白字压成淡蓝上的半透明白，实测 #btnPrimary 只有 1.96:1，
+ * 完全读不出字；而 #btnCopyEmail 初始就是 disabled、#btnSend 发送中也 disabled，
+ * 用户在这两个最常用的按钮上会看到"一片空白的按钮"。
+ * 改成显式禁用色：#6b7280 on #f1f3f6 = 4.35:1，#4a6aa8 on #e8eefb = 4.61:1。 */
+.btn:disabled {
+  opacity: 1;
+  background: #f1f3f6;
+  border-color: #e6e9ee;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+.btn.btn-primary:disabled {
+  background: #e8eefb;
+  border-color: #dbe4f5;
+  color: #4a6aa8;
+}
+.btn.btn-danger:disabled,
+.btn.btn-primary.btn-danger:disabled {
+  background: #f7eaea;
+  border-color: #f0dcdc;
+  color: #a97070;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+.btn-primary:active:not(:disabled) {
+  transform: translateY(.5px);
+  background: #1e40af;
+  border-color: #1e40af;
+}
+.btn-sm { padding: 6px 11px; font-size: 12px; }
+/* 危险操作（删除账户）：覆盖 btn-primary 的蓝色，白字在 --bad 上 5.9:1 */
+.btn.btn-danger,
+.btn.btn-primary.btn-danger {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+}
+.btn.btn-danger:hover:not(:disabled),
+.btn.btn-primary.btn-danger:hover:not(:disabled) {
+  background: #a01f1f;
+  border-color: #a01f1f;
+}
+
+/* ---------- 账户列表 ---------- */
+.account-list {
+  flex: 1;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+}
+.empty, .placeholder {
+  padding: 32px 20px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.placeholder.error { color: var(--bad); }
+
+.account-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* 左缩进统一 18px：与 .side-actions / .side-filter / .brand 对齐。
+     原来这里 18px、后面又有一条 padding-left:12px 覆盖，行内容比
+     上面的搜索框和按钮往左缩了 6px，侧栏整体看着是歪的。 */
+  padding: 10px 14px 10px 18px;
+  cursor: pointer;
+  border-bottom: 1px solid #f2f4f6;
+  transition: background .12s;
+  /* 内联菜单是绝对定位子元素，锚点必须是这一行；
+     用相对定位而不是 position:fixed 手算坐标，窗口缩放不会错位。 */
+  position: relative;
+}
+.account-item:hover { background: var(--row-hover); }
+/* 选中行：底色之外再加左竖条，hover 与 active 不再只差 1.048:1 */
+.account-item.active {
+  background: var(--row-active);
+  box-shadow: inset 3px 0 var(--primary);
+}
+/* 菜单所在行抬高层级，避免浮层被后面的行盖住 */
+.account-item.menu-open { z-index: 20; }
+
+.dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot.ok { background: var(--ok); }
+.dot.bad { background: var(--bad); }
+/* 未检测：原 #c9ced6 在白底只有 1.58:1，基本看不见。
+ * 改成 #8b95a5（约 3.2:1）并用空心环表示——三态不再只靠颜色区分：
+ * 实心绿 = 可用、实心红 = 异常、空心灰 = 未检测。 */
+.dot.unknown {
+  background: transparent;
+  border: 1.5px solid #8b95a5;
+}
+
+.account-info { flex: 1; min-width: 0; }
+.account-email {
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 单击即整段选中：复制邮箱按钮之外的第二条路径 */
+  user-select: all;
+}
+.account-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-menu {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  line-height: 1;
+}
+.account-menu:hover { background: #e5e7eb; color: var(--text); }
+
+/* ---------- 账户行内联菜单 ----------
+ * 相对 .account-item 定位（见 .account-item 的 position: relative），
+ * 贴在 ⋯ 按钮的右下方。底部空间不够时脚本给浮层加 .above 向上翻。
+ */
+.account-menu-pop {
+  position: absolute;
+  top: calc(100% - 2px);
+  right: 10px;
+  z-index: 30;
+  min-width: 168px;
+  max-width: 260px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(17, 24, 39, .16);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.account-menu-pop.above {
+  top: auto;
+  bottom: calc(100% - 2px);
+}
+
+/* 菜单抬头：完整邮箱，一个字都不省略（长前缀相同的账户必须能分辨） */
+.account-menu-head {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  padding: 5px 9px 6px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  word-break: break-all;
+  white-space: normal;
+  user-select: all;
+}
+
+.account-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 7px 9px;
+  border-radius: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.account-menu-item:hover { background: #f3f4f6; }
+.account-menu-item.danger { color: var(--bad); }
+.account-menu-item.danger:hover { background: #fef2f2; }
+
+/* ---------- 主区 ---------- */
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.toolbar {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+}
+.toolbar-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.toolbar-left h2 {
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.toolbar-right { display: flex; align-items: center; gap: 8px; }
+.toolbar-right select { width: 130px; }
+/* 邮箱很长时让 h2 去省略，复制按钮保持完整宽度。
+ * min-width 按"已复制 ✓"的宽度锁死，切换文案时工具栏不位移。
+ * （必须写在 ID 选择器上：#id 的优先级高于 .btn.copied） */
+#btnCopyEmail {
+  flex: 0 0 auto;
+  min-width: 86px;
+}
+
+.badge {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: #f3f4f6;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge.ok { background: #dcfce7; color: #15803d; }
+.badge.bad { background: #fdeaea; color: var(--bad); }
+.badge.warn { background: #fdf3e3; color: var(--warn); }
+/* 空徽章（没有任何状态文案）不应该渲染成一颗空灰胶囊 */
+.badge:empty { display: none; }
+
+.content {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+/* ---------- 邮件列表 ---------- */
+.msg-list {
+  width: 360px;
+  min-width: 360px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  background: var(--panel);
+}
+
+.msg-item {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f2f4f6;
+  cursor: pointer;
+  transition: background .12s;
+}
+.msg-item:hover { background: var(--row-hover); }
+/* 未读：原来 #fbfcff 对白底只有 1.03:1，等于没有任何视觉差别。
+ * 改成更明确的淡蓝底 + 左竖条，发件人也加粗。 */
+.msg-item.unread {
+  background: #f7faff;
+  box-shadow: inset 3px 0 var(--primary);
+}
+.msg-item.unread .msg-subject { font-weight: 600; }
+.msg-item.unread .msg-from { font-weight: 600; }
+/* 当前正在阅读的这一封：必须有明确落点，否则点开一封后列表里看不出点的是哪封 */
+.msg-item.active {
+  background: var(--row-active);
+  box-shadow: inset 3px 0 var(--primary);
+}
+/* 未读且已选中：保留 active 的左侧竖条，未读态不再抢背景 */
+.msg-item.active.unread { background: var(--row-active); }
+
+.msg-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+}
+.msg-from {
+  font-size: 12px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-date { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.msg-subject {
+  font-size: 13px;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-snippet {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 没有附加信息时不要留下一条空行（margin-top 造成的空白） */
+.msg-snippet:empty { display: none; }
+
+/* ---------- 骨架屏 ----------
+ * 只在等待超过 250ms 时才由脚本插入（见 app.js 的 withSkeleton），
+ * 否则一次普通加载也会闪一下骨架，比"加载中…"更刺眼。
+ * 刻意不用 shimmer 扫光：列表密、行数多，扫光会变成持续的视觉噪声。
+ */
+.skel-msg {
+  padding: 12px 16px;
+  border-bottom: 1px solid #f2f4f6;
+}
+.skel-bar {
+  height: 12px;
+  border-radius: 4px;
+  background: #eef2f8;
+  margin-bottom: 6px;
+}
+.skel-bar:last-child { margin-bottom: 0; }
+/* 三行高度递减，模拟 发件人行 / 标题 / 摘要 的真实层级 */
+.skel-msg .skel-bar:nth-child(1) { height: 12px; }
+.skel-msg .skel-bar:nth-child(2) { height: 13px; }
+.skel-msg .skel-bar:nth-child(3) { height: 11px; margin-bottom: 0; }
+
+/* 邮件正文骨架：标题 + 3 条 meta + 若干正文行，必须顶部对齐——
+ * 正文是从上往下长出来的，让骨架从中间居中会显得整块在跳。 */
+.skel-detail { padding: 24px 28px; }
+.skel-detail .skel-bar { height: 12px; }
+.skel-detail .skel-bar.skel-title { height: 19px; margin-bottom: 16px; }
+.skel-detail .skel-bar.skel-meta { height: 10px; margin-bottom: 7px; }
+.skel-detail .skel-bar.skel-body { height: 12px; margin-bottom: 9px; }
+.skel-detail .skel-gap { height: 18px; }
+
+/* ---------- 结构化错误态 ---------- */
+.state {
+  padding: 32px 20px;
+  text-align: center;
+  line-height: 1.8;
+}
+.state-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.state-desc {
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-word;
+  margin-bottom: 14px;
+}
+.state-error .state-title { color: var(--bad); }
+.state .btn { display: inline-block; }
+
+/* ---------- 邮件详情 ---------- */
+.msg-view {
+  flex: 1;
+  overflow-y: auto;
+  background: var(--panel);
+  min-width: 0;
+}
+
+.mail-detail { padding: 24px 28px; }
+.mail-subject {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 14px;
+  word-break: break-word;
+}
+.mail-meta {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.9;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 18px;
+  word-break: break-all;
+}
+.mail-meta b { color: var(--text); font-weight: 500; }
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.attach {
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 4px 9px;
+}
+.attach small { color: var(--muted); }
+
+/*
+ * 邮件 HTML 一律放进沙箱 iframe 渲染。
+ * sandbox 属性（无 allow-scripts）确保里面的脚本无法执行，
+ * 也无法访问父页面的 token 与凭据。
+ */
+.mail-frame {
+  width: 100%;
+  /* 固定 640px 在 768 高的屏幕上会把页面撑出滚动条；
+     用 clamp 让它在小屏上收、大屏上放，同时始终占住主要视野。 */
+  height: clamp(320px, 68vh, 960px);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.mail-text {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+
+/* ---------- 验证码面板 ---------- */
+.chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: opacity .12s;
+}
+.chk input { cursor: pointer; }
+/* 结果板打开期间 #chkAutoCopy 会被禁用，但原来禁用后视觉零变化，
+ * 用户仍会去点它并困惑"为什么没反应"。整块降透明度 + not-allowed。 */
+.chk:has(input:disabled) {
+  opacity: .6;
+  cursor: not-allowed;
+}
+.chk:has(input:disabled) input { cursor: not-allowed; }
+
+.code-panel {
+  display: none;
+  background: #f0fdf4;
+  border-bottom: 1px solid #bbf7d0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.code-panel.show { display: block; }
+
+.code-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #15803d;
+  border-bottom: 1px solid #dcfce7;
+}
+.code-panel-close {
+  border: none;
+  background: transparent;
+  color: #15803d;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.code-panel-close:hover { background: #dcfce7; }
+
+.code-panel-list { padding: 4px 0; }
+
+.code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: background .12s;
+}
+.code-row:hover { background: #dcfce7; }
+.code-row-value {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-weight: 700;
+  /* 与批量结果板的 .board-code-value 统一到 18px */
+  font-size: 18px;
+  color: #15803d;
+  letter-spacing: 1px;
+  min-width: 84px;
+}
+.code-row-meta {
+  flex: 1;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.code-row-time { color: var(--muted); flex-shrink: 0; }
+.code-row-copy {
+  border: 1px solid #86efac;
+  background: #fff;
+  color: #15803d;
+  border-radius: 4px;
+  padding: 2px 9px;
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.code-row-copy:hover { background: #dcfce7; }
+
+/* 邮件详情里的验证码横幅 */
+.code-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 7px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+}
+.code-banner.none {
+  /* 未识别到验证码不该占一整条横幅——它和"找到验证码"的成功态
+   * 占地一样大，会让 90% 的普通邮件看起来像出了什么事。
+   * 收成一行灰字，纯提示不抢注意力。 */
+  padding: 4px 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  margin-bottom: 14px;
+}
+.code-label { font-size: 12px; color: var(--muted); }
+.code-banner.none .code-label {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.code-value {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  /* 这是整个页面最重要的内容（用户来就是为了抄这 6 位），
+   * 必须压过 17px 的邮件标题 */
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #15803d;
+  user-select: all;
+  margin-right: auto;
+}
+
+/* ---------- 弹窗 ---------- */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, .45);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 100;
+}
+.modal.show { display: flex; }
+
+.modal-box {
+  background: var(--panel);
+  border-radius: 10px;
+  width: 460px;
+  max-width: 100%;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .18);
+}
+.modal-box.wide { width: 640px; }
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h3 { font-size: 15px; font-weight: 600; }
+.modal-close {
+  border: none;
+  background: transparent;
+  font-size: 15px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.modal-close:hover { background: #f3f4f6; color: var(--text); }
+
+.modal-body {
+  padding: 18px 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.modal-body label {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.modal-body .hint {
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  background: #f0f6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 6px;
+}
+.modal-body code {
+  background: #e8eef8;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+}
+.row { display: flex; gap: 12px; }
+.col { flex: 1; display: flex; flex-direction: column; gap: 8px; }
+
+.err {
+  font-size: 12px;
+  color: var(--bad);
+  min-height: 16px;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* 确认弹窗正文：保留换行（message 里用 \n\n 分段），文本可选中复制 */
+#confirmMessage {
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+/* ---------- 端点诊断弹窗 ---------- */
+/* 结果是给人读、还要能选中复制的：全程 textContent 渲染，这里不禁止选择 */
+#modalDiagnose .modal-body { gap: 10px; }
+#diagEmail {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  word-break: break-all;
+  user-select: all;
+}
+#diagBody { font-size: 13px; }
+.diag-loading {
+  padding: 14px 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.diag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.diag-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 8px;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.diag-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #f2f4f6;
+  vertical-align: top;
+  word-break: break-all;
+}
+.diag-endpoint {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  color: var(--text);
+}
+/* 成功行绿、失败行红：不靠颜色单独承载语义，另有"成功/失败"文字 */
+.diag-table tr.diag-ok td { color: var(--ok); }
+.diag-table tr.diag-bad td { color: var(--bad); }
+.diag-result { font-weight: 600; white-space: nowrap; }
+.diag-code {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  white-space: nowrap;
+}
+.diag-time {
+  color: var(--muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.diag-table tr.diag-detail td {
+  border-bottom: 1px solid #f2f4f6;
+  padding-top: 0;
+}
+.diag-message {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  color: #7f1d1d;
+  word-break: break-all;
+}
+.diag-empty {
+  padding: 10px 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.diag-summary {
+  margin-top: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  word-break: break-word;
+}
+.diag-summary.ok { color: var(--ok); }
+.diag-summary.bad { color: var(--bad); }
+.diag-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--muted);
+  background: #f0f6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 6px;
+  padding: 10px 12px;
+  word-break: break-word;
+}
+
+/* ---------- Toast ---------- */
+.toast {
+  position: fixed;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%) translateY(16px);
+  background: #111827;
+  color: #fff;
+  font-size: 13px;
+  padding: 10px 18px;
+  border-radius: 7px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s, transform .2s;
+  z-index: 200;
+  max-width: 80vw;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.err { background: var(--bad); }
+.toast.warn { background: var(--warn); }
+.toast.ok { background: #15803d; }
+
+/* ---------- 平台标注 ----------
+ * 配色全部由 app.js 的 pfBuildPalette() 现算，以 --pf-bg / --pf-fg / --pf-bd
+ * 三个内联变量下发（--pf-color 是平台原色，只用于左侧色条）。
+ *
+ * 为什么不在 CSS 里写死品牌色当底色：规格 §5 要求 chip 文字对底色 ≥ 4.5:1，
+ * 而 17 个品牌色里有一半达不到——Google #4285f4 配白字 3.56:1、
+ * Spotify #1db954 只有 2.59:1、Amazon #ff9900 只有 2.14:1。
+ * 统一用「品牌色 12% 浅底 + 压暗的品牌色文字」后，17 色实测最低 4.60:1，
+ * 自定义平台（中性灰）5.09:1。描边按选中行底色 #dbe6fb 校准，最低 3.10:1。
+ * 具体数值见交付报告；改这里之前先跑一遍对比度。
+ */
+.account-platforms {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  /* 账户行里可用宽度只有侧栏减去勾选框/dot/⋯ 的那么点，超长必须收敛 */
+  min-width: 0;
+}
+
+.pf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 2px 6px;
+  border-radius: 4px;
+  /* 三个变量都由内联 style 提供；这里给出中性兜底，防止将来漏传时整行不可读 */
+  background: var(--pf-bg, #ebecee);
+  color: var(--pf-fg, #5b6470);
+  border: 1px solid var(--pf-bd, #5b6470);
+  /* 左侧品牌色条：让 chip 保留品牌识别度，同时不牺牲文字对比度 */
+  border-left: 3px solid var(--pf-color, #5b6470);
+  white-space: nowrap;
+  /* 560px 窄窗口下 chip 曾被压到 17px（只够放左边那条色条），× 被 overflow
+   * 裁到 chip 外 32px 处，elementFromPoint 命中的是 HTML —— 而 × 是唯一的
+   * 删除入口。原写法允许 chip 被 flex 无限压缩，所以必须禁止它收缩：
+   * 只让内层文字收缩（见 .pf-chip-t），chip 本身按内容宽度排，超宽时靠
+   * max-width:100% 封顶并换行，不再把自己压成一个点。 */
+  flex: 0 0 auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  /* 注意：text-overflow 在这里对匿名文本无效（没有可截断的行内盒），
+   * 省略号由下面的 .pf-chip-t 承担 —— 这也是 F2 要在 app.js 里把 chip
+   * 文字包进 <span class="pf-chip-t"> 的原因，纯 CSS 无法补救。 */
+}
+
+/* chip 的文字层：唯一允许被压缩的东西。
+ * min-width:0 是 flex 项能收窄到内容宽度以下的前提（默认 min-width:auto
+ * 会让它撑住不缩），overflow+ellipsis 才能在收窄后画出省略号。 */
+.pf-chip-t {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pf-chip .pf-x {
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  /* 原 opacity:.75 把前景色混进 chip 底色，17 个平台里 14 个的 × 实测掉到
+   * 3.0–4.4:1（最低 Anthropic 3.006，Google 3.033，Spotify 3.008）。
+   * × 是 12px 文本，不适用大字号豁免，所以必须 ≥4.5:1：
+   * 去掉透明度后 × 直接继承 --pf-fg，对比度与 chip 文字相同（最低 Netflix
+   * 4.604、Spotify 4.613、自定义平台 5.089），17/17 达标。视觉层级改由
+   * hover 底色承担。 */
+  opacity: 1;
+  /* 触控目标：原 0 1px 内边距只有 10×12px，远低于最小可点尺寸；
+   * 撑到 18×18 后它既是视觉元素也是一个能点中的按钮。 */
+  padding: 2px 5px;
+  min-width: 18px;
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 1px;
+  cursor: pointer;
+  border-radius: 3px;
+  /* 永远不被压缩：文字再长也只截断 .pf-chip-t，× 必须留在 chip 内可点。 */
+  flex: 0 0 auto;
+}
+/* hover 反馈用底色而不是透明度（调透明度会重新引发上面的对比度问题）。
+ * 底色压暗 8% 后，若 × 仍用品牌色 --pf-fg，实测最低会掉到 3.851:1
+ * （Spotify）——所以 hover 时把字色换成正文色 #1f2328，此时最低 10.377:1。
+ * 代价是 hover 时 × 短暂变成中性色，换来的是一个明确"可点"的高对比按钮。 */
+.pf-chip .pf-x:hover { background: rgba(0, 0, 0, .08); color: var(--text); }
+/* 焦点环画在按钮内侧：chip 有 overflow:hidden，全局 :focus-visible 的
+ * outline-offset:2px 会被裁掉一半，键盘用户看不到焦点。 */
+.pf-chip .pf-x:focus-visible { outline-offset: -2px; }
+
+/* "+3"：比 chip 弱一档，但不能弱到读不出（--muted 在白底 6.0:1） */
+.pf-more {
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 2px 4px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pf-empty {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ---------- 详情面板的平台编辑区 ---------- */
+.pf-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 8px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.pf-editor-head {
+  /* 原来这里只有 flex:0 0 auto（= 永不收缩），而标题里嵌着句提示语
+   * 「标注这个邮箱注册过哪些服务」，560px 视口下这句话自己就要 211px。
+   * 父容器宽 260px、减掉左右 padding 只剩 236px，标题独占 211px 之后，
+   * 后面 flex:1 1 0% 的 chip 容器连内容宽度的分配资格都没有，被压到
+   * 17px —— 这才是 chip 变成"一根色条"的真正起点（chip 的 max-width:100%
+   * 是相对这个 17px 的容器解析的）。
+   * 允许标题收缩并省略：提示语是可选的说明文字，chip 和 × 是功能入口，
+   * 空间不够时该让步的是前者。 */
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.pf-hint {
+  font-weight: 400;
+  color: var(--muted);
+  margin-left: 4px;
+}
+/* chip 容器：详情面板的 #pfChips 和弹窗「已选」区的 #pfChosen 是同一个类。
+ * 原选择器写成 `.pf-editor .pf-chips`，只有编辑器内部拿得到 flex+gap，
+ * 弹窗那 5 个 chip 退化成行内流，实测相邻间距是 -16px（重叠，不是贴着），
+ * 文字被后一个 chip 的底色盖住。
+ * 现在把布局提到基类，两个容器共用；只把编辑器专有的「吃掉剩余宽度」
+ * 留在 .pf-editor 的限定里 —— 弹窗是纵向 flex，在那里给 flex:1 会让这块
+ * 区域莫名其妙地长高。 */
+.pf-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.pf-editor .pf-chips {
+  /* 关键：flex-basis 必须是 auto（内容宽度），不能是 0。
+   * 原写法 flex:1 展开成 1 1 0% —— flex 换行是按**基准尺寸**决定在哪断行的，
+   * 基准 0 意味着"这个容器不占宽度"，于是它和标题挤在同一行，只在标题
+   * 吃完 211px 之后拿到 17px 剩余空间；chip 的 max-width:100% 又相对这 17px
+   * 解析，最终宽度 16.7px、文字宽度 0、× 被挤到容器外 14px。
+   * 改成 basis:auto 后它的自然宽度参与断行计算，标题（含提示语）占满一行时
+   * chip 容器会换到下一行并拿到整行宽度，× 才有地方待。 */
+  flex: 1 1 auto;
+}
+.pf-editor #pfAdd { flex: 0 0 auto; }
+
+/* ---------- 平台选择器 ---------- */
+.pf-modes {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 2px 0 4px;
+}
+.pf-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  /* .modal-body label 默认 margin-top:4px + 弱化色，模式选择要跟正文一样可读 */
+  margin: 0 !important;
+  font-size: 13px !important;
+  color: var(--text) !important;
+  cursor: pointer;
+  user-select: none;
+}
+.pf-mode input { cursor: pointer; accent-color: var(--primary); }
+
+.pf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+/* 选择器里的单个平台：未选中是浅底 + 色点，选中是深一档的底 + ✓。
+ * 选中态不只靠颜色：边框变实、字重变粗、右侧出现 ✓。 */
+.pf-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background .1s, border-color .1s;
+}
+.pf-option:hover { background: #f3f4f6; }
+.pf-option .pf-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: var(--pf-color, #5b6470);
+  /* 品牌原色在浅底上大多只有 2.0–3.0:1（Amazon #ff9900 仅 1.95）。
+   * 这个点是装饰性的（选项的含义由文字承载），但补一圈 --pf-bd 描边后
+   * 它在浅底上也始终有可见轮廓，不会变成一块糊在背景里的色斑。 */
+  box-shadow: 0 0 0 1px var(--pf-bd, #5b6470);
+}
+.pf-option .pf-tick {
+  margin-left: auto;
+  font-size: 11px;
+  /* 必须继承 chip 的 --pf-fg 而不是用主色蓝：主色 #2563eb 在较深的
+   * chip 浅底上实测只有 4.06–4.45，达不到 4.5。继承 --pf-fg 后
+   * 勾号与文字同一对比度（≥4.6），色弱用户也能靠"有 ✓"分辨选中态。 */
+  color: inherit;
+  font-weight: 700;
+}
+.pf-option.on {
+  background: var(--pf-bg, #ebecee);
+  /* 选中态文字用压暗后的品牌色：在浅底上 ≥4.6:1，不会因为"强调"反而变难读 */
+  color: var(--pf-fg, #5b6470);
+  border-color: var(--pf-bd, #5b6470);
+  border-left: 3px solid var(--pf-color, #5b6470);
+  font-weight: 600;
+}
+
+.pf-custom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pf-custom-row input { flex: 1; min-width: 0; }
+.pf-custom-row .btn { flex: 0 0 auto; }
+
+/* .pf-editor #pfAdd 和 .pf-custom-row .btn 的 flex:0 0 auto 看起来重复，
+ * 但它们各自服务不同容器（横排的编辑条 vs 弹窗里的自定义输入行），
+ * 删掉任何一条那一侧的按钮都会被输入框挤扁。这里故意不合并。 */
+
+/* 原来这里有一条 #btnExportPlatforms { font-variant-numeric: tabular-nums }。
+ * 该按钮只有「导出平台清单」五个汉字，没有任何数字，等宽数字字形用不上，
+ * 属于复制粘贴留下的无效声明，已删除。 */
+
+/* .btn-sm 已存在（见 .btn 段落），这里不再重复定义 */
+
+@media (max-width: 900px) {
+  .pf-editor { padding: 7px 12px; }
+  .pf-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); max-height: 220px; }
+}
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb {
+  background: #d6dae0;
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: #bcc2cb; background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 批量收码：侧栏多选 / 批量条 ----------
+ * 作者样式里的 display 会盖掉浏览器默认的 [hidden] { display:none }，
+ * 所以这几块必须显式补一条规则，确保 hidden 属性真的能隐藏。
+ */
+[hidden] { display: none !important; }
+
+.side-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+.side-select .chk { flex: 0 0 auto; }
+/* 隐藏选中数的提示很长，必须允许换行；否则 300px 侧栏里会被 ellipsis 吞掉 */
+#selCount {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-check {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+/* 左缩进已在 .account-item 主规则里统一成 18px（这里原来覆盖成 12px，
+   导致复选框行比侧栏其它内容左移 6px）。保留 gap 覆盖即可。 */
+.account-item { gap: 8px; }
+
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  box-shadow: 0 -2px 10px rgba(17, 24, 39, .04);
+}
+.bulk-bar > span {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.bulk-bar button {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.bulk-bar button:hover:not(:disabled) { background: #f3f4f6; }
+.bulk-bar #btnBulkCodes {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+.bulk-bar #btnBulkCodes:hover:not(:disabled) {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+/* 禁用态同 .btn：不靠 opacity，用显式颜色保证文字可读 */
+.bulk-bar button:disabled {
+  opacity: 1;
+  background: #f1f3f6;
+  border-color: #e6e9ee;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+.bulk-bar #btnBulkCodes:disabled {
+  background: #e8eefb;
+  border-color: #dbe4f5;
+  color: #4a6aa8;
+}
+
+/* ---------- 批量收码：进度 ---------- */
+.scan-progress {
+  display: block;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 20px 12px;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.scan-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+#scanProgressText {
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;
+  word-break: break-word;
+}
+.scan-progress-head button {
+  flex: 0 0 auto;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.scan-progress-head button:hover:not(:disabled) { background: #f3f4f6; }
+.scan-progress-head button:disabled {
+  opacity: 1;
+  background: #f1f3f6;
+  border-color: #e6e9ee;
+  color: #6b7280;
+  cursor: not-allowed;
+}
+#btnShowCodeBoard { color: var(--primary); border-color: #bfdbfe; }
+#btnShowCodeBoard:hover:not(:disabled) { background: #eff6ff; }
+#btnScanCancel { color: var(--bad); border-color: #fecaca; }
+#btnScanCancel:hover:not(:disabled) { background: #fef2f2; }
+.scan-progress-track {
+  height: 8px;
+  /* 原 #e8eefb 对白底 1.16:1，轨道几乎看不见，
+   * 只剩一条蓝色在空白里飘——用户根本分不清"进度条"和"页面背景"。
+   * 加深底色再补一圈内描边，让整条轨道有明确边界。 */
+  background: #e2e9f7;
+  box-shadow: inset 0 0 0 1px #d5dded;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.scan-progress-fill {
+  width: 0;
+  height: 100%;
+  background: var(--primary);
+  border-radius: var(--radius);
+  /* 数据每 1000ms 才更新一次。原来 .3s ease 是"跳 0.3 秒 → 冻 0.7 秒"，
+   * 看起来像卡顿；改成 .9s linear，让每一帧都在动，接下一次更新时刚好接上。 */
+  transition: width .9s linear;
+}
+/* 不确定态：total 还不知道（0）时，0% 的静止条看起来就是"卡死了" */
+.scan-progress-fill.indeterminate {
+  width: 30% !important;
+  animation: indet 1.4s ease-in-out infinite;
+}
+@keyframes indet {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
+}
+/* 收尾态：done === total 但 draining 还没结束（后台还在写盘），
+ * 进度条停在 100% 会让人以为已完成而关掉窗口。用极轻的呼吸表示"还在动"。 */
+.scan-progress-fill.finishing {
+  opacity: .85;
+  animation: finishBreath 1s ease-in-out infinite;
+}
+@keyframes finishBreath {
+  0%, 100% { opacity: .85; }
+  50%      { opacity: 1; }
+}
+.scan-progress-sub {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+/* ---------- 批量收码：结果板 ---------- */
+.code-board {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  max-height: 44vh;
+  min-height: 120px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  resize: vertical;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.code-board-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+#codeBoardTitle {
+  font-weight: 600;
+  flex: 0 0 auto;
+  color: var(--text);
+}
+#codeBoardSub {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  word-break: break-word;
+}
+#btnCloseCodeBoard {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 3px 7px;
+  border-radius: 4px;
+}
+#btnCloseCodeBoard:hover { background: #f3f4f6; color: var(--text); }
+.code-board-list { padding: 8px 0 12px; min-width: 0; }
+
+/* 完整邮箱必须整行可读，不省略、不靠 tooltip。
+ * 两个长前缀相同的账户（abc123…@outlook.com / abc124…@outlook.com）
+ * 一旦被 ellipsis 截断就彻底无法区分该复制哪一行，所以这里禁止任何截断。 */
+.board-group { border-bottom: 1px solid #f2f4f6; }
+.board-group:last-child { border-bottom: none; }
+.board-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 16px 6px;
+  background: #f8fafc;
+}
+.board-group-email {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  /* 组标题是完整邮箱：一个字都不能省，长前缀相同的账户要能分辨 */
+  overflow: visible;
+  white-space: normal;
+  word-break: break-all;
+  text-overflow: clip;
+  line-height: 1.5;
+}
+.board-group-count {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--primary);
+  background: #eff6ff;
+  border: 1px solid #dbeafe;
+  border-radius: 20px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.board-code-list { padding: 0 16px 6px; }
+
+.board-code-row {
+  display: grid;
+  grid-template-columns: minmax(82px, auto) minmax(180px, 1fr) 138px auto;
+  align-items: center;
+  gap: 6px 12px;
+  padding: 7px 0;
+  border-top: 1px solid #f2f4f6;
+  min-width: 0;
+}
+.board-code-row:first-child { border-top: none; }
+.board-code-value {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 700;
+  letter-spacing: 1px;
+  color: var(--text);
+  word-break: break-all;
+  user-select: all;
+}
+/* 域名不许省略：github.com.evil.com 的欺骗后缀必须整串可见。
+ * 这一条是真实钓鱼面：如果这里给了 ellipsis，攻击者从
+ * "GitHub <noreply@github.com.evil.com>" 发信，用户只会看到 noreply@github.com…，
+ * 尾巴上的 .evil.com 被吞掉，等于把"这不是 GitHub"的关键证据藏起来了。
+ * 所以：overflow 必须 visible、允许换行、任意位置可断行、等宽字体。
+ * 末两级标签由 domainHtml() 加粗，让真正的主域一眼可见。 */
+.board-code-domain {
+  min-width: 0;
+  overflow: visible;
+  white-space: normal;
+  word-break: break-all;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.board-code-domain b { color: var(--text); font-weight: 700; }
+.board-code-date {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* 发件人原文整串可读：不省略、不折叠进 tooltip */
+.board-code-from {
+  grid-column: 1 / -1;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  overflow: visible;
+  white-space: normal;
+  word-break: break-all;
+}
+.board-code-copy {
+  border: 1px solid #bfdbfe;
+  background: #fff;
+  color: var(--primary);
+  border-radius: 6px;
+  padding: 4px 11px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.board-code-copy:hover { background: #eff6ff; border-color: var(--primary); }
+.board-code-copy:active { background: #dbeafe; }
+.board-no-code { font-size: 12px; color: var(--muted); padding: 4px 0 6px; }
+
+.board-group-error {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 5px 0;
+  font-size: 12px;
+  color: var(--bad);
+  line-height: 1.5;
+}
+.board-group-error-reason { font-weight: 600; word-break: break-word; }
+.board-group-error-detail {
+  flex-basis: 100%;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  color: #7f1d1d;
+  word-break: break-all;
+}
+
+/* 任务级错误（硬时限/整体失败）：结果板顶部常驻，不只是 toast 一闪而过 */
+.board-job-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 8px 16px 0;
+  padding: 8px 10px;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius);
+  background: #fef2f2;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--bad);
+}
+.board-job-error-label { font-weight: 600; flex: 0 0 auto; }
+.board-job-error-text {
+  flex: 1;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* 原始错误文本：比中文原因弱一档，但仍要读得清 */
+.board-failure-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: #7f1d1d;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+/* 失败账户：--bad 在白底上 5.9:1，不用浅色小字 */
+.board-failures {
+  margin: 8px 16px 0;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius);
+  background: #fff7f7;
+  overflow: hidden;
+}
+.board-failures-head {
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--bad);
+  background: #fef2f2;
+  border-bottom: 1px solid #fecaca;
+}
+.board-failure-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--bad);
+  border-top: 1px solid #fee2e2;
+  line-height: 1.5;
+}
+.board-failure-row:first-child { border-top: none; }
+.board-failure-email {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  white-space: normal;
+  word-break: break-all;
+}
+.board-failure-sep { flex: 0 0 auto; }
+.board-failure-reason {
+  flex: 1;
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+  font-weight: 500;
+}
+
+@media (max-width: 900px) {
+  .scan-progress { padding: 9px 12px 10px; }
+  .scan-progress-head { flex-wrap: wrap; gap: 6px; }
+  .scan-progress-sub { font-size: 11px; }
+  .code-board {
+    max-height: 40vh;
+    min-width: 0;
+    width: 100%;
+    overflow-x: hidden;
+  }
+  .code-board-head { flex-wrap: wrap; padding: 8px 12px; gap: 6px 8px; }
+  #codeBoardSub { flex-basis: 100%; }
+  .board-group-head { padding: 8px 12px 5px; flex-wrap: wrap; }
+  .board-group-email { flex-basis: 100%; }
+  .board-code-list { padding: 0 12px 6px; }
+  .board-code-row {
+    grid-template-columns: minmax(70px, auto) 1fr auto;
+    gap: 5px 8px;
+  }
+  .board-code-value { grid-column: 1; grid-row: 1; font-size: 16px; }
+  .board-code-date { grid-column: 2; grid-row: 1; justify-self: end; font-size: 11px; white-space: normal; word-break: break-word; }
+  .board-code-copy { grid-column: 3; grid-row: 1; padding: 3px 8px; font-size: 11px; }
+  .board-code-domain {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    font-size: 12px;
+  }
+  .board-code-from { grid-column: 1 / -1; grid-row: 3; font-size: 11px; }
+  .board-failures { margin: 8px 12px 0; }
+  .board-failure-row { flex-wrap: wrap; font-size: 12px; }
+  .board-failure-reason { flex-basis: 100%; }
+  .board-failure-error { flex-basis: 100%; }
+}
+
+/* ============================================================
+ * 微动效
+ * ------------------------------------------------------------
+ * 全部是短时、一次性的，不循环、不位移列表行、不做扫光。
+ * 所有动画都自动受 :16 的 prefers-reduced-motion 规则保护
+ * （animation-duration 被压到 0.01ms），不需要在这里重复判断。
+ * ============================================================ */
+
+/* ---------- 弹窗打开：只做开，关闭不做动画 ----------
+ * 关闭时加动画会让"点了确定→弹窗还赖着 160ms"变成可感知的延迟。
+ */
+@keyframes modalIn {
+  from { opacity: 0; transform: scale(.98); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.modal.show .modal-box {
+  animation: modalIn .16s ease-out;
+}
+
+/* ---------- 面板展开：淡入内容，不做高度动画 ----------
+ * height 动画要读 offsetHeight 并强制重排，而且结果板内容随时在长，
+ * 高度动画会和中途追加的行打架。只淡入，稳定且不闪。
+ */
+@keyframes panelIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.code-panel.show { animation: panelIn .2s ease-out; }
+.code-board:not([hidden]) { animation: panelIn .2s ease-out; }
+
+/* ---------- 复制成功反馈 ----------
+ * 用户每天要复制上百次验证码，"点了到底成没成"必须当场看得见。
+ * 文案从"复制"变"已复制 ✓"会撑宽按钮、把工具栏推一下，
+ * 所以每个复制按钮都常驻一个够放"已复制 ✓"的 min-width：
+ * 常态与反馈态宽度一致，切换时零位移。
+ */
+@keyframes copiedPop {
+  from { transform: scale(.97); }
+  to   { transform: scale(1); }
+}
+.copied {
+  background: var(--ok-soft-2) !important;
+  border-color: #86efac !important;
+  color: #15803d !important;
+  animation: copiedPop .12s ease-out;
+}
+/* 常驻宽度（不是只在 .copied 时才有，否则第一次复制仍会跳一下）。
+ * #btnCopyEmail 已在工具栏那段按 86px 锁死，#btnCopyCode 是详情横幅里的
+ * 复制按钮，这里一起按"已复制 ✓"的宽度预留。 */
+#btnCopyCode { min-width: 68px; }
+.code-row-copy,
+.board-code-copy { min-width: 52px; }
+/* 反馈态再放宽一点，装下"已复制 ✓" */
+.code-row-copy.copied,
+.board-code-copy.copied { min-width: 70px; }
+
+/* ---------- 按钮内的轻量进行中指示 ----------
+ * 不用无限旋转的 spinner（见任务要求的"不要做"清单），
+ * 长任务的"还在跑"由文案 + 计时器承担（见 app.js 的 startTicker）。
+ * 这里只给刷新按钮一个 2 秒内结束的淡入，避免点了没反应的错觉。
+ */
+@keyframes flashOnce {
+  from { opacity: .55; }
+  to   { opacity: 1; }
+}
+.btn.busy {
+  animation: flashOnce .18s ease-out;
+  cursor: progress;
+}
+/* 长任务进行中宽度必须锁死。文案会在"连接中… → 正在连接 IMAP（0.4s）→
+ * 正在读取邮件（4.2s）→ 正在解析验证码（11.8s）"之间每 200ms 变一次。
+ *
+ * 用常驻 min-width 而不是只在 .busy 期间锁：如果只在跑的时候变宽，
+ * 点击的那一瞬间工具栏仍然会跳一下。按最长文案（7 个全角字 + 四位秒数
+ * + 括号 ≈ 144px，加 btn-sm 的 22px 内边距）预留，全程零位移。
+ * tabular-nums 让 9→0 这种数字形状变化也不改宽度。
+ * 侧栏按钮是纵向 stretch 的，宽度本来就由容器决定，无需锁定。 */
+#btnCodes {
+  min-width: 172px;
+  font-variant-numeric: tabular-nums;
+}
+#btnRefresh {
+  min-width: 78px;
+  font-variant-numeric: tabular-nums;
+}
+/* 检测中按钮要显示"正在检测哪个账号"，文字长度一直在变。
+   不锁宽度的话侧栏三个按钮会随之左右抖动。 */
+#btnCheckAll {
+  font-variant-numeric: tabular-nums;
+  min-width: 128px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 统计数字变化 ----------
+ * 只在数值真的变了时由脚本加 .changed，400ms 后移除。
+ * 绝不做 count-up 滚动：数字滚动会让"异常 3"中途显示成"异常 1"，
+ * 一瞬间的信息是错的。
+ */
+.stat-num {
+  transition: background-color .2s ease-out;
+  padding: 0 2px;
+}
+
