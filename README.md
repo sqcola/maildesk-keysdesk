@@ -5,7 +5,7 @@
 跑在你自己电脑上，数据不出本机，没有云、没有第三方依赖、没有 `npm install`。
 
 <p align="center">
-  <img src="docs/images/maildesk.png" alt="MailDesk 界面：按平台筛选邮箱" width="820">
+  <img src="docs/images/maildesk.jpg" alt="MailDesk 界面：按平台筛选邮箱" width="820">
 </p>
 
 ---

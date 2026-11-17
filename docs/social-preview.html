@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1280px; height: 640px;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    color: #e2e8f0;
+    display: flex; align-items: center; gap: 48px;
+    padding: 0 64px;
+    overflow: hidden;
+  }
+  .left { flex: 0 0 420px; }
+  .logo { font-size: 32px; margin-bottom: 20px; }
+  h1 {
+    font-size: 46px; font-weight: 700; line-height: 1.15;
+    background: linear-gradient(90deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 20px;
+  }
+  .sub { font-size: 19px; line-height: 1.55; color: #94a3b8; margin-bottom: 28px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 10px; }
+  .tag {
+    font-size: 13px; padding: 6px 14px; border-radius: 999px;
+    background: rgba(96,165,250,.13); color: #93c5fd;
+    border: 1px solid rgba(96,165,250,.28);
+  }
+  .right { flex: 1; display: flex; gap: 16px; align-items: center; justify-content: center; }
+  .shot {
+    border-radius: 10px; overflow: hidden;
+    box-shadow: 0 20px 50px rgba(0,0,0,.55);
+    border: 1px solid rgba(148,163,184,.22);
+  }
+  .shot img { display: block; width: 100%; }
+  .s1 { width: 340px; transform: rotate(-2deg); }
+  .s2 { width: 340px; transform: rotate(2deg); }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="logo">✉ 🔑</div>
+    <h1>MailDesk &amp; KeyDesk</h1>
+    <p class="sub">
+      两个零依赖的本地工具：批量管理邮箱，
+      以及安全保管它们的 2FA 密钥与恢复码。
+    </p>
+    <div class="tags">
+      <span class="tag">零依赖</span>
+      <span class="tag">本地运行</span>
+      <span class="tag">AES-256-GCM</span>
+      <span class="tag">TOTP</span>
+      <span class="tag">Node.js</span>
+    </div>
+  </div>
+  <div class="right">
+    <div class="shot s1"><img src="images/maildesk.jpg" alt=""></div>
+    <div class="shot s2"><img src="images/keydesk.jpg" alt=""></div>
+  </div>
+</body>
+</html>

@@ -3,7 +3,7 @@
 本地 2FA 凭据管理工具。零第三方依赖，纯本地运行，**没有密钥文件**——密钥从你输入的口令派生。
 
 <p align="center">
-  <img src="../docs/images/keydesk.png" alt="KeyDesk 界面：条目列表与大号验证码" width="780">
+  <img src="../docs/images/keydesk.jpg" alt="KeyDesk 界面：条目列表与大号验证码" width="780">
 </p>
 
 ## 快速开始
