@@ -1974,11 +1974,15 @@ function bindGlobalEvents() {
     const bad = [];
     for (let k = 0; k < 3; k++) {
       const got = (($('confirmRecSeg' + (k + 1)).value || '')).toUpperCase();
+      // 存的是"输入框序号"（1/2/3），但提示里要说的是"密钥的第几段"（2/5/7）。
+      // 这两个数字不一样，直接拼会告诉用户"第 1 段错了"——而他明明填的是第 2 段。
       if (got !== want[k]) bad.push(k + 1);
     }
     if (bad.length) {
+      const SEG_NO = [2, 5, 7];   // 输入框序号 → 密钥段号的映射
       $('confirmRecoveryErr').textContent =
-        '第 ' + bad.join('、') + ' 段和刚才显示的不一致。请检查抄写，或点「重新显示恢复密钥」再看一遍。';
+        '第 ' + bad.map(i => SEG_NO[i - 1]).join('、') +
+        ' 段和刚才显示的不一致。请检查抄写，或点「重新显示恢复密钥」再看一遍。';
       const f = $('confirmRecSeg' + bad[0]);
       if (f) { f.focus(); f.select(); }
       return;
