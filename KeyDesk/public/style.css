@@ -1023,6 +1023,16 @@ textarea { resize: vertical; line-height: 1.5; }
 .row { display: flex; gap: 12px; }
 .col { flex: 1; display: flex; flex-direction: column; gap: 8px; }
 
+/* 授权码文件的完整路径可能很长（含用户名和盘符），必须允许在任意位置折行，
+   否则会把弹窗顶宽、把正文挤成一列窄条。user-select:all 让单击即可整段选中，
+   用户不必用鼠标拖过一长串路径。 */
+.hs-path {
+  display: block;
+  user-select: all;
+  word-break: break-all;
+  line-height: 1.6;
+}
+
 .err {
   font-size: 12px;
   color: var(--bad);

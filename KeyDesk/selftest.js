@@ -682,6 +682,81 @@ t('重新生成恢复密钥需要正确口令', () => {
     (e) => e.code === 'BAD_PASSPHRASE');
 });
 
+/* ---- 恢复解锁的会话也能设新口令 ---- */
+
+t('恢复解锁后可以设新口令，且新旧通道都还能用', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'vault.enc');
+  const ks = new KeyStore(p, { kdf: FAST_KDF });
+  const r = ks.setup('forgotten passphrase');
+  ks.save({ version: 1, revision: 42, entries: [{ keep: 'me' }] });
+  ks.lock();
+
+  // 用户忘了口令，用恢复密钥进门
+  ks.unlockWithRecovery(r.recoveryKey);
+  // 旧口令传空串：恢复会话里前端本来就没有旧口令可填
+  ks.changePassphrase('', 'brand new passphrase');
+  ks.lock();
+
+  // 新口令必须能开门
+  ks.unlock('brand new passphrase');
+  assert.strictEqual(ks.load().revision, 42, '改口令后数据必须完好');
+  ks.lock();
+
+  // 恢复密钥仍然可用 —— 它是逃生门，改口令不能把它弄坏
+  ks.unlockWithRecovery(r.recoveryKey);
+  assert.strictEqual(ks.load().revision, 42);
+});
+
+t('恢复会话下弱口令仍然被拒（跳过旧口令不等于放松新口令）', () => {
+  const dir = tmpDir();
+  const ks = new KeyStore(path.join(dir, 'vault.enc'), { kdf: FAST_KDF });
+  const r = ks.setup('forgotten passphrase');
+  ks.lock();
+  ks.unlockWithRecovery(r.recoveryKey);
+
+  assert.throws(() => ks.changePassphrase('', 'short'),
+    (e) => e.code === 'INVALID');
+  assert.throws(() => ks.changePassphrase('', 'password123'),
+    (e) => e.code === 'INVALID');
+  // 被拒之后库仍在恢复会话里，数据没被动过
+  assert.strictEqual(ks.isLocked(), false);
+});
+
+t('恢复会话改完口令后，再改口令必须验新口令', () => {
+  const dir = tmpDir();
+  const ks = new KeyStore(path.join(dir, 'vault.enc'), { kdf: FAST_KDF });
+  const r = ks.setup('forgotten passphrase');
+  ks.lock();
+  ks.unlockWithRecovery(r.recoveryKey);
+  ks.changePassphrase('', 'brand new passphrase');
+
+  // 豁免只在"这次恢复会话"有效；改完就是普通口令会话了
+  assert.throws(() => ks.changePassphrase('', 'another passphrase'),
+    (e) => e.code === 'BAD_PASSPHRASE');
+  ks.changePassphrase('brand new passphrase', 'another passphrase');
+});
+
+t('锁定态下 changePassphrase 仍然抛 LOCKED', () => {
+  const dir = tmpDir();
+  const ks = new KeyStore(path.join(dir, 'vault.enc'), { kdf: FAST_KDF });
+  ks.setup('correct horse battery');
+  ks.lock();
+  // 即使调用方伪造"我是恢复会话"的环境，也必须先被 LOCKED 挡住
+  ks._unlockedVia = 'recovery';
+  assert.throws(() => ks.changePassphrase('', 'brand new passphrase'),
+    (e) => e.code === 'LOCKED');
+});
+
+t('口令会话下旧口令错误仍然 BAD_PASSPHRASE（豁免没有泄漏到普通会话）', () => {
+  const dir = tmpDir();
+  const ks = new KeyStore(path.join(dir, 'vault.enc'), { kdf: FAST_KDF });
+  ks.setup('correct horse battery');
+  assert.strictEqual(ks._unlockedVia, 'pass');
+  assert.throws(() => ks.changePassphrase('', 'brand new passphrase'),
+    (e) => e.code === 'BAD_PASSPHRASE');
+});
+
 /* ================= 11. 原子写 / 备份轮转 ================= */
 
 section('11. 原子写入与备份轮转');
@@ -693,6 +768,143 @@ t('save 只留最终文件，不留 .tmp', () => {
   ks.setup('correct horse battery');
   ks.save({ version: 1, revision: 1, entries: [] });
   assert.ok(!fs.existsSync(p + '.tmp'), '临时文件没有清理');
+});
+
+t('tmp 名唯一：写入用带 pid 的临时名，且写完没有 vault.enc.tmp* 残留', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'vault.enc');
+  const ks = new KeyStore(p, { kdf: FAST_KDF });
+  ks.setup('correct horse battery');
+
+  // 抓一次真实的 tmp 名字。只断言"事后目录干净"是不够的：固定名在
+  // 单进程顺序写入下同样不会残留，只有名字本身才能证明并发是安全的。
+  const seen = [];
+  const origOpen = fs.openSync;
+  fs.openSync = function (file, flags, mode) {
+    if (typeof file === 'string' && path.basename(file).startsWith('vault.enc.tmp')) {
+      seen.push(path.basename(file));
+    }
+    return origOpen.call(fs, file, flags, mode);
+  };
+  try {
+    ks.save({ version: 1, revision: 1, entries: [] });
+  } finally {
+    fs.openSync = origOpen;
+  }
+
+  assert.ok(seen.length >= 1, '这次写入没有打开任何 tmp 文件，测试没抓到东西');
+  for (const name of seen) {
+    assert.ok(name.indexOf(process.pid + '-') !== -1,
+      'tmp 名必须含 process.pid（否则双开时两个进程共用同一个文件）：' + name);
+  }
+
+  const leftovers = fs.readdirSync(dir).filter(n => n.startsWith('vault.enc.tmp'));
+  assert.deepStrictEqual(leftovers, [], '数据目录里留下了临时文件：' + leftovers.join(', '));
+});
+
+t('写盘失败时关掉 fd 并删掉半成品', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'vault.enc');
+  const ks = new KeyStore(p, { kdf: FAST_KDF });
+  ks.setup('correct horse battery');
+  ks.save({ version: 1, revision: 1, entries: [] });
+
+  // 让 fsync 在写 tmp 时失败。这模拟磁盘满 / I/O 错误——
+  // 此时 tmp 里是写了一半的新内容，必须删掉，不能留在数据目录里。
+  const origFsync = fs.fsyncSync;
+  let failed = false;
+  fs.fsyncSync = function (fd) {
+    if (!failed) {
+      failed = true;
+      const e = new Error('模拟磁盘写入失败');
+      e.code = 'ENOSPC';
+      throw e;
+    }
+    return origFsync.call(fs, fd);
+  };
+  try {
+    assert.throws(() => ks.save({ version: 1, revision: 2, entries: [] }),
+      (e) => e && e.code === 'ENOSPC');
+  } finally {
+    fs.fsyncSync = origFsync;
+  }
+
+  const leftovers = fs.readdirSync(dir).filter(n => n.startsWith('vault.enc.tmp'));
+  assert.deepStrictEqual(leftovers, [], '写盘失败后留下了半成品：' + leftovers.join(', '));
+  // 主文件必须是上一次成功写入的那份，不能被半成品污染
+  const ks2 = new KeyStore(p, { kdf: FAST_KDF });
+  ks2.unlock('correct horse battery');
+  assert.strictEqual(ks2.load().revision, 1);
+});
+
+t('双开：两个实例交替写入，最终文件仍是合法 JSON 且能解开', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'vault.enc');
+  const k1 = new KeyStore(p, { kdf: FAST_KDF });
+  k1.setup('double open passphrase');
+  const k2 = new KeyStore(p, { kdf: FAST_KDF });
+  k2.unlock('double open passphrase');
+
+  // 精确复现"两个进程共用同一个 tmp 文件"的窗口：在 k1 打开自己的 tmp、
+  // 还没写入之前，让 k2 完整地写一遍。固定 tmp 名下两个 fd 指向同一个
+  // inode，k2 的 rename 会把 k1 的 fd 一起带到主文件上，k1 随后写入
+  // 留下的尾部字节就是主文件里的垃圾 —— 实测表现为"文件结构损坏"。
+  // 修好之后两者各用各的 tmp，rename 都是原子的，语义是"后写者赢"。
+  const origOpen = fs.openSync;
+  let interleaved = false;
+  let k1Error = null;
+  fs.openSync = function (file, flags, mode) {
+    const fd = origOpen.call(fs, file, flags, mode);
+    if (!interleaved && typeof file === 'string' &&
+        path.basename(file).startsWith('vault.enc.tmp') && String(flags).indexOf('w') === 0) {
+      interleaved = true;
+      k2.save({ version: 1, revision: 2000,
+        entries: [{ marker: 'from-k2', pad: 'B'.repeat(4096) }] });
+    }
+    return fd;
+  };
+  try {
+    k1.save({ version: 1, revision: 1000, entries: [{ marker: 'from-k1' }] });
+  } catch (e) {
+    k1Error = e;   // 固定 tmp 名时这里会是 ENOENT（自己的 tmp 被另一个实例 rename 走了）
+  } finally {
+    fs.openSync = origOpen;
+  }
+
+  assert.strictEqual(k1Error, null,
+    '并发写入时保存不应失败：' + (k1Error && k1Error.message));
+
+  // 主文件必须是合法 JSON（parseVaultFile 在这里会抛"文件结构损坏"）
+  const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+  assert.strictEqual(j.format, 'keydesk/1');
+
+  // 而且必须真的能用口令解开。两个实例轮流写，最后落盘的是 k1。
+  const k3 = new KeyStore(p, { kdf: FAST_KDF });
+  k3.unlock('double open passphrase');
+  const d = k3.load();
+  assert.strictEqual(d.revision, 1000, '最后一次写入的内容必须是完整的一份');
+  assert.strictEqual(d.entries[0].marker, 'from-k1');
+});
+
+t('双开：两个实例交替保存不丢结构（多轮）', () => {
+  const dir = tmpDir();
+  const p = path.join(dir, 'vault.enc');
+  const a = new KeyStore(p, { kdf: FAST_KDF });
+  a.setup('double open passphrase');
+  const b = new KeyStore(p, { kdf: FAST_KDF });
+  b.unlock('double open passphrase');
+
+  for (let i = 0; i < 10; i++) {
+    a.save({ version: 1, revision: i * 2, entries: [{ who: 'a' }] });
+    b.save({ version: 1, revision: i * 2 + 1, entries: [{ who: 'b' }] });
+  }
+  const c = new KeyStore(p, { kdf: FAST_KDF });
+  c.unlock('double open passphrase');
+  const d = c.load();
+  assert.strictEqual(d.revision, 19, '最后写者（b）的内容应完整落盘');
+  assert.strictEqual(d.entries[0].who, 'b');
+  const leftovers = fs.readdirSync(dir).filter(n => n.startsWith('vault.enc.tmp'));
+  assert.deepStrictEqual(leftovers, [], '交替写入后不应留下 tmp 残骸');
 });
 
 t('多次 save 生成 bak.1 / bak.2 / bak.3', () => {
@@ -769,8 +981,124 @@ t('把 recovery 槽的密文搬到 pass 槽会失败（AAD 绑定）', () => {
   assert.throws(() => ks.unlock('correct horse battery'), (e) => e.code === 'BAD_PASSPHRASE');
 });
 
-/* ================= 12. 限速 ================= */
+/* ---- 实例锁 ---- */
 
+section('11.5 实例锁');
+
+const instanceLock = require('./lib/instance-lock');
+
+t('instance-lock 导出 acquire / release / pidState', () => {
+  assert.strictEqual(typeof instanceLock.acquire, 'function');
+  assert.strictEqual(typeof instanceLock.release, 'function');
+  assert.strictEqual(typeof instanceLock.pidState, 'function');
+});
+
+t('acquire 两次，第二次必须失败（INSTANCE_RUNNING）', () => {
+  const dir = tmpDir();
+  const lp = path.join(dir, 'server.lock');
+  try {
+    const r = instanceLock.acquire(lp);
+    assert.strictEqual(r.ok, true);
+    assert.ok(fs.existsSync(lp), '锁文件应已创建');
+
+    assert.throws(() => instanceLock.acquire(lp), (e) => e.code === 'INSTANCE_RUNNING');
+  } finally {
+    instanceLock.release();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  }
+});
+
+t('release 之后能再拿到锁', () => {
+  const dir = tmpDir();
+  const lp = path.join(dir, 'server.lock');
+  try {
+    instanceLock.acquire(lp);
+    assert.strictEqual(instanceLock.release(), true);
+    assert.ok(!fs.existsSync(lp), '正常 release 必须删掉锁文件');
+    // 再拿一次，必须成功
+    const r = instanceLock.acquire(lp);
+    assert.strictEqual(r.ok, true, '释放后应能重新抢到锁');
+  } finally {
+    instanceLock.release();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  }
+});
+
+t('陈旧锁（pid 已不存在）能被自动接手', () => {
+  const dir = tmpDir();
+  const lp = path.join(dir, 'server.lock');
+  try {
+    // 999999 在本机不存在：pidState 会返回 'dead'
+    assert.strictEqual(instanceLock.pidState(999999), 'dead');
+    fs.writeFileSync(lp, JSON.stringify({
+      pid: 999999, startedAt: '2020-01-01T00:00:00.000Z', token: 'stale-token',
+    }), 'utf8');
+
+    let warned = '';
+    const origWarn = console.warn;
+    console.warn = (...a) => { warned += a.join(' '); };
+    let r;
+    try {
+      r = instanceLock.acquire(lp);
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.strictEqual(r.ok, true, '陈旧锁应被接手');
+    assert.strictEqual(r.adoptedStale, true, '应报告这是接手的陈旧锁');
+    assert.match(warned, /陈旧锁/, '接手陈旧锁时应打印警告');
+
+    // 接手的锁里现在的 pid 是我们自己
+    const cur = JSON.parse(fs.readFileSync(lp, 'utf8'));
+    assert.strictEqual(cur.pid, process.pid);
+  } finally {
+    instanceLock.release();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  }
+});
+
+t('锁文件内容损坏时按陈旧锁处理', () => {
+  const dir = tmpDir();
+  const lp = path.join(dir, 'server.lock');
+  try {
+    fs.writeFileSync(lp, '{half written', 'utf8');
+    const origWarn = console.warn;
+    console.warn = () => { /* 这条测试本来就会触发一条警告，不要刷屏 */ };
+    let r;
+    try {
+      r = instanceLock.acquire(lp);
+    } finally {
+      console.warn = origWarn;
+    }
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.adoptedStale, true);
+  } finally {
+    instanceLock.release();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  }
+});
+
+t('pid 存活时拒绝接手（锁里有别的活进程）', () => {
+  const dir = tmpDir();
+  const lp = path.join(dir, 'server.lock');
+  // 用当前进程自己的 pid 不够说明问题：acquire 有专门的"本进程已持有"分支。
+  // 这里写一个**确定活着但不是本进程**的 pid —— Windows 上的 0 号和 4 号
+  // 是内核进程；POSIX 上的 1 号是 init。任何系统上它们都在跑。
+  const livePid = process.platform === 'win32' ? 4 : 1;
+  assert.strictEqual(instanceLock.pidState(livePid), 'alive',
+    'pid ' + livePid + ' 应被判定为存活（否则这条测试测不到东西）');
+  try {
+    fs.writeFileSync(lp, JSON.stringify({ pid: livePid, token: 'other-instance' }), 'utf8');
+    assert.throws(() => instanceLock.acquire(lp), (e) => e.code === 'INSTANCE_RUNNING');
+    // 别人的锁原样保留，不能被我们的失败路径删掉
+    const cur = JSON.parse(fs.readFileSync(lp, 'utf8'));
+    assert.strictEqual(cur.pid, livePid);
+  } finally {
+    instanceLock.release();
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  }
+});
+
+/* ================= 12. 限速 ================= */
 section('12. 失败限速');
 
 t('连续 5 次错口令后进入限速（THROTTLED）', () => {

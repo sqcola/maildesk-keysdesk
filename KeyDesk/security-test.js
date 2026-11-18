@@ -91,21 +91,193 @@ function parseJson(r) {
   const AUTH = { 'Authorization': 'Bearer ' + SESSION_TOKEN };
   const JSONH = { 'Content-Type': 'application/json' };
 
+  /* ---------------- 握手凭据 ---------------- */
+
+  // handshake 落在 DATA_DIR（KEYDESK_DATA_DIR 已由上面指到临时目录），
+  // 所以直接读那个目录，不要去碰真实的用户数据。
+  const HS_FILE = path.join(TEST_DATA, 'handshake');
+  let hsSecret = '';
+  try { hsSecret = fs.readFileSync(HS_FILE, 'utf8').trim(); } catch { /* 下面会断言它必须存在 */ }
+  const HS = { 'X-KeyDesk-Handshake': hsSecret };
+  // 由 bootstrap 用例填入，后面的"首页要带 cookie"用例依赖它
+  let HS_COOKIE = '';
+  // 引导只接受同源请求；node 的 http 客户端不会自动加 Sec-Fetch-Site
+  const bootstrap = (secret, extraHeaders) => req(PORT, {
+    method: 'POST',
+    path: '/api?action=handshake.bootstrap',
+    headers: Object.assign(
+      { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+      extraHeaders || {}
+    ),
+  }, JSON.stringify({ secret }));
+
   /* ---------------- 基线：服务真的起来了 ---------------- */
 
   section('0. 基线');
-  await t('握手返回 token 且带 no-store', async () => {
+
+  await t('握手秘密文件已创建且是 64 位 hex', async () => {
+    assert.match(hsSecret, /^[0-9a-f]{64}$/, '读不到或格式不对：' + JSON.stringify(hsSecret));
+  });
+
+  await t('无凭据的 handshake 返回 401 + HANDSHAKE_REQUIRED，且不含 token', async () => {
     const r = await req(PORT, { path: '/api?action=handshake' });
-    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.status, 401, '无凭据不能拿到 token，实际 ' + r.status);
     const j = parseJson(r);
-    assert.ok(j && j.ok === true);
-    assert.strictEqual(typeof j.token, 'string');
-    assert.strictEqual(j.token.length, 64, 'token 应为 32 字节的 hex');
+    assert.strictEqual(j.ok, false);
+    assert.strictEqual(j.code, 'HANDSHAKE_REQUIRED');
+    assert.strictEqual(j.token, undefined, '401 响应里出现了 token 字段');
+    assert.ok(!r.body.includes(SESSION_TOKEN), '响应体里出现了真实的会话 token');
+    // 路径放在 JSON 里，反斜杠会被转义，所以比解析后的值而不是原始 body
+    assert.strictEqual(j.handshakeFile, HS_FILE, '401 应告诉用户授权码文件在哪');
     assert.strictEqual(r.headers['cache-control'], 'no-store');
   });
 
-  await t('静态页返回 CSP script-src self', async () => {
+  await t('带正确 header 的 handshake 拿到 token', async () => {
+    const r = await req(PORT, { path: '/api?action=handshake', headers: HS });
+    assert.strictEqual(r.status, 200, r.body);
+    const j = parseJson(r);
+    assert.strictEqual(j.ok, true);
+    assert.strictEqual(j.token, SESSION_TOKEN);
+    assert.strictEqual(r.headers['cache-control'], 'no-store');
+  });
+
+  await t('错误 header 不换到 token', async () => {
+    // 三个方向都必须被拒：少一位、大小写变体、随便一个别的 64 位 hex。
+    // 只测"随便一个"是不够的：如果实现里做了大小写归一化或少位宽容，
+    // 那三个里的两个会静默放行。
+    const variants = [
+      hsSecret.slice(0, -1),
+      // 秘密可能恰好全由数字组成（toUpperCase 后与原值相同），那就不再是
+      // "大小写变体"而是一个有效秘密。遇到这种情况退回到翻转首字符，
+      // 保证构造出来的串一定不等于真实秘密。
+      hsSecret.toUpperCase() === hsSecret
+        ? (hsSecret[0] === '0' ? '1' : '0') + hsSecret.slice(1)
+        : hsSecret.toUpperCase(),
+      'f'.repeat(64) === hsSecret ? 'e'.repeat(64) : 'f'.repeat(64),
+    ];
+    for (const v of variants) {
+      const r = await req(PORT, {
+        path: '/api?action=handshake',
+        headers: { 'X-KeyDesk-Handshake': v },
+      });
+      assert.strictEqual(r.status, 401, JSON.stringify(v.slice(0, 8)) + ' 实际 ' + r.status);
+      assert.ok(!r.body.includes(SESSION_TOKEN), '被拒时不得下发 token');
+    }
+  });
+
+  await t('home 无 cookie 返回引导页：含文件路径、不含 token', async () => {
     const r = await req(PORT, { path: '/' });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.includes(HS_FILE), '引导页应给出实际的授权码文件路径');
+    assert.ok(r.body.includes('X-KeyDesk-Handshake'), '引导页应给出 curl 头部示例');
+    assert.ok(!r.body.includes(SESSION_TOKEN), '引导页里出现了会话 token');
+    assert.ok(!r.body.includes('id="lockscreen"'), '无授权不应拿到真正的首页');
+  });
+
+  await t('引导页的内联脚本靠 CSP nonce 放行，不用 unsafe-inline', async () => {
+    const r = await req(PORT, { path: '/' });
+    const csp = r.headers['content-security-policy'] || '';
+    const m = /script-src 'nonce-([^']+)'/.exec(csp);
+    assert.ok(m, '引导页 CSP 应有 nonce: ' + csp);
+    assert.ok(r.body.includes('nonce="' + m[1] + '"'), '内联脚本没有带上下发的 nonce');
+    // 样式也必须走 nonce：一旦留了 'unsafe-inline'，CSP 里那条强约束就名存实亡，
+    // 而引导页正是用户输入授权码的页面。
+    assert.ok(!csp.includes('unsafe-inline'), '引导页 CSP 不应含 unsafe-inline');
+    assert.ok(csp.includes("object-src 'none'"), '引导页也应禁掉 object/embed');
+    const st = /style-src ([^;]+)/.exec(csp);
+    assert.ok(st && /nonce-/.test(st[1]), 'style-src 也应走 nonce: ' + (st && st[1]));
+  });
+
+  await t('正确授权码换到 cookie，且 cookie 不是秘密原文', async () => {
+    const r = await bootstrap(hsSecret);
+    assert.strictEqual(r.status, 200, r.body);
+    const sc = (r.headers['set-cookie'] || [])[0] || '';
+    assert.ok(sc, '应下发 cookie');
+    assert.ok(/^keydesk_hs=/.test(sc), 'cookie 名应为 keydesk_hs：' + sc);
+    assert.ok(/HttpOnly/i.test(sc), 'cookie 必须是 HttpOnly');
+    assert.ok(/SameSite=Strict/i.test(sc), 'cookie 必须是 SameSite=Strict');
+    assert.ok(!sc.includes(hsSecret), 'cookie 里不能是秘密原文（应为 HMAC 派生值）');
+    assert.ok(r.body.includes('"token"'), '200 时应下发 token');
+    HS_COOKIE = sc.split(';')[0];
+  });
+
+  await t('带 cookie 的 handshake 拿到 token（浏览器主路径）', async () => {
+    assert.ok(HS_COOKIE, '上一条没有拿到 cookie，这条无从验证');
+    const r = await req(PORT, {
+      path: '/api?action=handshake',
+      headers: { Cookie: HS_COOKIE },
+    });
+    assert.strictEqual(r.status, 200, r.body);
+    assert.strictEqual(parseJson(r).token, SESSION_TOKEN);
+  });
+
+  await t('伪造 cookie 值不换取 token', async () => {
+    const bad = 'keydesk_hs=' + 'a'.repeat(64);
+    const r = await req(PORT, { path: '/api?action=handshake', headers: { Cookie: bad } });
+    assert.strictEqual(r.status, 401);
+    assert.ok(!r.body.includes(SESSION_TOKEN));
+  });
+
+  await t('带 cookie 访问首页返回真正的 index.html', async () => {
+    const r = await req(PORT, { path: '/', headers: { Cookie: HS_COOKIE } });
+    assert.strictEqual(r.status, 200);
+    assert.ok(r.body.includes('id="lockscreen"'), '已授权时应拿到真正的首页');
+    assert.ok(r.body.includes('app.js'), '首页应引用 app.js');
+  });
+
+  await t('跨站引导请求返回 403，即使授权码正确', async () => {
+    const r = await bootstrap(hsSecret, { 'Sec-Fetch-Site': 'cross-site' });
+    assert.strictEqual(r.status, 403, '跨站应 403，实际 ' + r.status);
+    assert.ok(!r.body.includes('"token"'), '跨站不得下发 token');
+    assert.ok(!r.headers['set-cookie'], '跨站不得下发 cookie');
+  });
+
+  await t('连错 3 次后第 4 次起返回 429', async () => {
+    // 先用一次成功把失败计数归零，这样"第几次"是确定的，不依赖前面用例留下的状态。
+    assert.strictEqual((await bootstrap(hsSecret)).status, 200, '重置失败计数失败');
+    for (let i = 1; i <= 3; i++) {
+      const r = await bootstrap('0'.repeat(63) + i);
+      assert.strictEqual(r.status, 401, '第 ' + i + ' 次应仍是 401，实际 ' + r.status);
+      assert.ok(!r.headers['set-cookie'], '第 ' + i + ' 次被拒时不得下发 cookie');
+    }
+    const r = await bootstrap(hsSecret);
+    assert.strictEqual(r.status, 429, '第 4 次应被冷却挡住，实际 ' + r.status);
+    assert.ok(!r.body.includes('"token"'), '429 不得下发 token');
+    assert.ok(!r.headers['set-cookie'], '429 不得下发 cookie');
+    // 冷却结束后必须恢复可用，否则用户一旦粘错几次就永久进不来
+    await new Promise(res => setTimeout(res, 900));
+    const again = await bootstrap(hsSecret);
+    assert.strictEqual(again.status, 200, '冷却结束后应恢复，实际 ' + again.status);
+  });
+
+  await t('秘密截断 / 大小写变体都被拒', async () => {
+    // toUpperCase 在纯数字秘密上是恒等变换，那时它就不是"错误变体"而是真秘密，
+    // 断言会变成"正确授权码被拒"。这种情况改用翻转首字符来构造一个必然错误的值。
+    const caseVariant = hsSecret.toUpperCase() === hsSecret
+      ? (hsSecret[0] === '0' ? '1' : '0') + hsSecret.slice(1)
+      : hsSecret.toUpperCase();
+    for (const s of [hsSecret.slice(0, -1), hsSecret.slice(0, 32), caseVariant]) {
+      const r = await bootstrap(s);
+      assert.strictEqual(r.status, 401, JSON.stringify(s.slice(0, 8)) + ' 实际 ' + r.status);
+      assert.ok(!r.body.includes('"token"'), '不得下发 token');
+      assert.ok(!r.headers['set-cookie'], '不得下发 cookie');
+    }
+  });
+
+  await t('空秘密被拒', async () => {
+    // 这条紧跟在"连错 3 次"之后。若前面的用例刚把服务推进冷却，这里会拿到 429；
+    // 为了断言的是"空秘密的判定"而不是"冷却状态"，先等过冷却窗口。
+    await new Promise(res => setTimeout(res, 900));
+    const r = await bootstrap('');
+    assert.strictEqual(r.status, 401, r.body);
+    assert.ok(!r.headers['set-cookie']);
+    assert.ok(!r.body.includes('"token"'));
+  });
+
+  /* ---------------- 真实的静态页（带 cookie 才拿得到） ---------------- */
+
+  await t('index.html 静态页 CSP script-src self', async () => {
+    const r = await req(PORT, { path: '/', headers: { Cookie: HS_COOKIE } });
     assert.strictEqual(r.status, 200);
     const csp = r.headers['content-security-policy'] || '';
     assert.ok(csp.includes("script-src 'self'"), 'CSP 缺少 script-src self: ' + csp);
@@ -116,7 +288,7 @@ function parseJson(r) {
   });
 
   await t('index.html 不含内联脚本 / onclick', async () => {
-    const r = await req(PORT, { path: '/' });
+    const r = await req(PORT, { path: '/', headers: { Cookie: HS_COOKIE } });
     assert.ok(!/<script(?![^>]*\bsrc=)/i.test(r.body), '页面里有内联 <script>');
     assert.ok(!/\son[a-z]+\s*=/i.test(r.body), '页面里有 onclick 之类的事件属性');
     assert.ok(!/\sstyle\s*=/i.test(r.body), '页面里有内联 style 属性（CSP style-src self 会拦掉）');
@@ -151,21 +323,25 @@ function parseJson(r) {
     }
   });
 
-  await t('127.0.0.1 Host 正常', async () => {
+  await t('127.0.0.1 Host 通过 Host 校验（无凭据 → 401 而非 403）', async () => {
+    // 无凭据时握手一定是 401。断言"不是 403"很重要：403 是 Host 校验拒绝，
+    // 401 才是"Host 对、但缺本机授权"。两者混淆时，即便 Host 校验被整段删掉，
+    // 这条测试也照样通过。
     const r = await req(PORT, {
       path: '/api?action=handshake',
       headers: { Host: '127.0.0.1:' + PORT },
     });
-    assert.strictEqual(r.status, 200);
-    assert.ok(r.body.includes('token'));
+    assert.strictEqual(r.status, 401, '应为 401（缺授权），实际 ' + r.status);
+    assert.strictEqual(parseJson(r).code, 'HANDSHAKE_REQUIRED');
+    assert.ok(!r.body.includes(SESSION_TOKEN), '无凭据不得下发 token');
   });
 
-  await t('localhost Host 正常', async () => {
+  await t('localhost Host 通过 Host 校验（无凭据 → 401 而非 403）', async () => {
     const r = await req(PORT, {
       path: '/api?action=handshake',
       headers: { Host: 'localhost:' + PORT },
     });
-    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.status, 401, '应为 401（缺授权），实际 ' + r.status);
   });
 
   await t('Host 缺失被拒', async () => {
@@ -268,8 +444,9 @@ function parseJson(r) {
       const r = await req(PORT, { path: p });
       assert.ok(r.status === 400 || r.status === 404, p + ' 实际 ' + r.status);
     }
-    // 服务还活着
-    const alive = await req(PORT, { path: '/api?action=handshake' });
+    // 服务还活着。探针必须带握手凭据：无凭据的 handshake 现在固定 401，
+    // 只断言 401 无法区分"进程还活着但拒绝授权"和"进程已经半死、所有请求都失败"。
+    const alive = await req(PORT, { path: '/api?action=handshake', headers: HS });
     assert.strictEqual(alive.status, 200, '畸形请求后服务挂了');
   });
 
@@ -277,7 +454,7 @@ function parseJson(r) {
     await rawReq(PORT, 'GET http://x:bad HTTP/1.1\r\nHost: x\r\n\r\n');
     await rawReq(PORT, 'GET :::: HTTP/1.1\r\nHost: x\r\n\r\n');
     await rawReq(PORT, 'NOTAMETHOD / HTTP/1.1\r\nHost: 127.0.0.1:' + PORT + '\r\n\r\n');
-    const alive = await req(PORT, { path: '/api?action=handshake' });
+    const alive = await req(PORT, { path: '/api?action=handshake', headers: HS });
     assert.strictEqual(alive.status, 200, '畸形请求行后服务挂了');
   });
 
@@ -892,8 +1069,10 @@ function parseJson(r) {
     // 0.0.0.0 在部分 Windows 配置下会路由到回环，所以这里不断言 false，
     // 只确认 127.0.0.1 可达。真正的绑定地址由 server.listen('127.0.0.1') 保证。
     assert.ok(typeof ok === 'boolean');
-    const r = await req(PORT, { path: '/api?action=handshake' });
-    assert.strictEqual(r.status, 200);
+    // 探针带握手凭据：要验的是"回环端口真的在服务"，不是"授权会通过"。
+    // 不带凭据的话这条在服务只监听但握手整段坏掉时也能拿到 401 而误判为通过。
+    const r = await req(PORT, { path: '/api?action=handshake', headers: HS });
+    assert.strictEqual(r.status, 200, r.body);
   });
 
   await t('默认端口在 2151-2160 区间', async () => {

@@ -411,6 +411,43 @@
   </div>
 </div>
 
+<!-- ============ 本机授权 ============ -->
+<!-- 服务端在"没通过握手授权"时不给首页，直接吐引导页；但 cookie 可能在使用中
+     失效（清了 cookie、换了浏览器配置、服务端重新生成了秘密文件），那时页面
+     已经在跑，只能靠这个弹窗把用户送回去重新授权。
+     写进 HTML 而不是由 app.js 拼 DOM：一是不必再引一段动态 HTML，
+     二是授权码输入框必须是一个真正的 password 字段，交给静态标记更可控。
+     **不允许**出现内联样式属性或内联脚本：CSP 是 style-src 'self'，
+     内联样式会被直接丢掉，而 security-test 也在断言这两点。 -->
+<div class="modal" id="modalHandshake">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="hsTitle">
+    <div class="modal-head">
+      <h3 id="hsTitle">需要本机授权</h3>
+      <button class="modal-close" data-close="modalHandshake" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="hint">
+        KeyDesk 要先确认调用方是这台电脑上的你本人，才会把会话令牌交出来。
+        打开下面这个文件，把整行内容复制过来：
+      </p>
+      <p><code class="hs-path" id="hsPath">数据目录 handshake</code></p>
+      <p class="hint">
+        文件里是一串 64 位十六进制字符，用记事本打开即可。这个码等于本机访问
+        密钥库的钥匙，不要发给别人、不要贴进任何网页。
+      </p>
+      <label for="hsCode">授权码</label>
+      <input type="password" id="hsCode" autocomplete="off" spellcheck="false"
+             placeholder="粘贴 64 位授权码" aria-describedby="hsHint">
+      <div class="hint" id="hsHint">每个浏览器授权一次，之后会记住一年。</div>
+      <div class="err" id="hsErr" role="alert"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalHandshake">稍后</button>
+      <button class="btn btn-primary" id="hsOk">授权</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <!-- ============ 打印视图 ============ -->

@@ -21,6 +21,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+// 只借用 pidState：判断数据目录里遗留的 tmp 文件是否属于一个**确定已消失**
+// 的进程，才敢删。两个模块对"pid 是否还活着"必须用同一套判断，否则会出现
+// 「锁认为它死了、清理认为它活着」这种自相矛盾的状态。
+const { pidState } = require('./instance-lock');
 
 const FORMAT = 'keydesk/1';
 
@@ -73,6 +77,10 @@ function fail(code, message) {
 
 const b64 = buf => Buffer.from(buf).toString('base64');
 const unb64 = s => Buffer.from(String(s == null ? '' : s), 'base64');
+
+// vaultPath 可能来自用户配置（KEYDESK_DATA_DIR），文件名里出现正则元字符时
+// 直接拼进 RegExp 会匹配到别的文件——清扫遗留 tmp 的规则必须只命中自己的。
+const escapeRe = s => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function nowMs() { return Date.now(); }
 
@@ -342,6 +350,12 @@ class KeyStore {
       : { ...KDF };
 
     this._dek = null;            // Buffer(32) 或 null
+    // 当前 DEK 是用哪个槽解开的：'pass' | 'recovery' | null。
+    // 这个状态只影响一件事：改口令时要不要校验旧口令。恢复解锁的会话里
+    // 用户**根本没有旧口令**（他的口令已经忘了，那正是他走恢复密钥的原因），
+    // 要求"验证旧口令"等于永远不让他设新口令——人被锁在门外、拿恢复密钥
+    // 进来、却只能一直用恢复密钥，这是设计漏洞，不是安全特性。
+    this._unlockedVia = null;
     this._meta = null;           // 最近一次从磁盘读到的结构（不含明文）
 
     // 清理上次异常退出留下的中间文件。
@@ -349,14 +363,17 @@ class KeyStore {
     // .rollback 是改口令前的完整快照；因为它裹的是**同一把 DEK**（改口令
     // 不换 DEK，为了保住恢复槽），残留一份 = 旧口令 + 它就能解开当前库，
     // 前向安全完全失效。正常路径 _discardSnapshot 会删，但崩溃/断电/进程被
-    // 杀就留下了，而且跨重启一直在。.tmp 同理（可能含未落盘的半截数据）。
+    // 杀就留下了，而且跨重启一直在。
     try { fs.unlinkSync(this.vaultPath + '.rollback'); } catch { /* 不存在是常态 */ }
-    try { fs.unlinkSync(this.vaultPath + '.tmp'); } catch { /* 同上 */ }
     // .bak.stage 是 _atomicWrite 里"上一代主文件"的中转副本，同样含完整
     // 密文与数据库结构，崩溃残留没有保留价值（它要么已被并入 bak.1，
     // 要么这次写入压根没成功），一并清掉。
     try { fs.unlinkSync(this.vaultPath + '.bak.stage'); } catch { /* 同上 */ }
     try { fs.unlinkSync(this.vaultPath + '.bak.1.tmp'); } catch { /* 同上 */ }
+    // 带 pid 的 tmp / stage：只删**持有者确定已消失**的那些。
+    // 不能按固定名无脑删：两个实例同时跑时，另一个实例的 tmp 正是它
+    // 下一次 rename 的源文件，删掉它等于让那一次保存凭空失败。
+    this._cleanupStaleTmpFiles();
     this._idleTimeoutSec = Number.isInteger(o.idleTimeoutSec) && o.idleTimeoutSec >= 0
       ? o.idleTimeoutSec
       : DEFAULT_IDLE_SEC;
@@ -596,12 +613,65 @@ class KeyStore {
     }
   }
 
+  /**
+   * 清掉残留的 tmp / stage 文件（崩在 rename 之前的残骸）。
+   *
+   * 带 pid 的临时名解决了并发撕裂，代价是崩溃残留不再像固定名那样
+   * "下一次写入顺手覆盖掉"，会一直堆在数据目录里（每个含完整密文）。
+   * 所以构造时和改口令后各扫一遍，但只删**确定死掉**的 pid 的：
+   *   · pid 还活着 → 可能是另一个实例在写，绝不能动；
+   *   · pid 判断不了（EPERM 之外的异常）→ 同样不动，留给以后；
+   *   · 名字里没有合法 pid（旧版本留下的固定名 .tmp）→ 也删，
+   *     那是老代码的残骸，当前代码不会再用这个名字。
+   *
+   * 调用点都在"本模块没有并发写入"的位置（构造函数、改口令落盘之后），
+   * 且写入是同步的：正常退出路径不会留下自己的残骸；留下的必然是死 pid 的。
+   *
+   * @param {boolean} includeOwn 连**本进程**的残骸一起删。只在"确定本次
+   *   写入已经失败、不会再有 rename 用到那个文件"时传 true（例如 setup 的
+   *   失败回滚）——别的时候删自己的 tmp 会把一次正在进行的保存弄失败。
+   */
+  _cleanupStaleTmpFiles(includeOwn = false) {
+    const base = path.basename(this.vaultPath);
+    let names;
+    try { names = fs.readdirSync(this.dir); } catch { return; }
+    const oldFixed = new Set([base + '.tmp']);
+    const pidRe = new RegExp('^' + escapeRe(base) + '\\.(?:tmp|bak\\.stage)-(\\d+)-\\d+$');
+    for (const name of names) {
+      const full = path.join(this.dir, name);
+      if (oldFixed.has(name)) {
+        try { fs.unlinkSync(full); } catch { /* 忽略 */ }
+        continue;
+      }
+      const m = pidRe.exec(name);
+      if (!m) continue;
+      const pid = Number(m[1]);
+      // 本进程的残骸默认保留：另一个"保存"可能正拿着这个 tmp 准备 rename。
+      if (pid === process.pid && !includeOwn) continue;
+      if (pid !== process.pid && pidState(pid) !== 'dead') continue;
+      try { fs.unlinkSync(full); } catch { /* 忽略 */ }
+    }
+  }
+
   _atomicWrite(text) {
-    const tmp = this.vaultPath + '.tmp';
+    // tmp 名必须每进程唯一。
+    //
+    // 原来写死成 vault.enc.tmp：双击两次 start.bat 时，第二个实例因 EADDRINUSE
+    // 顺延到 2152 照样启动，两个进程于是共用同一个 tmp 文件。实测两种后果：
+    //   1. 整库不可读：A 的 fsync 与 B 的 write 交错，主文件被污染成非 JSON，
+    //      下次读取直接报"文件结构损坏"，全部条目一起打不开；
+    //   2. 写盘过程互相踩：一方 rename 走了另一方正在写的文件，后者拿到 ENOENT。
+    // pid + 时间戳让并发写入各用各的 tmp，rename 是原子的，最后落盘的那份
+    // 是完整的 JSON —— 语义退化成"后写者赢"，而不是"互相撕碎"。
+    // 同一进程内多次写入是同步的，前一次 rename 完成后才会走到下一次 open，
+    // 所以时间戳相同也不会重叠。
+    const tmp = this.vaultPath + '.tmp-' + process.pid + '-' + Date.now();
     // 上一代内容的中转副本。轮转被挪到 rename 成功之后（理由见下），
     // 而 rename 一执行完 tmp 就变成了主文件、老内容无处可取，
     // 所以在 rename 之前先把当前主文件抓一份到这里。
-    const stage = this.vaultPath + '.bak.stage';
+    // 同样带上 pid + 时间戳：固定名会让两个实例同时轮转备份链，
+    // 一个进程可能把另一个刚拷好的 stage 当成自己的上一代推进 bak.1。
+    const stage = this.vaultPath + '.bak.stage-' + process.pid + '-' + Date.now();
 
     const fd = fs.openSync(tmp, 'w', 0o600);
     try {
@@ -611,9 +681,17 @@ class KeyStore {
       // 少写一个字节 = 整份 vault.enc 解不开。writeFileSync 内部会循环到写完。
       fs.writeFileSync(fd, text, 'utf8');
       fs.fsyncSync(fd);          // 先落盘再改名，断电也不会留下半截文件
-    } finally {
-      fs.closeSync(fd);
+    } catch (e) {
+      // 写/fsync 失败（磁盘满、I/O 错误）：关掉 fd 并删掉半成品。
+      // 不删的话，这份**不完整**的密文会一直躺在数据目录里；
+      // 而"没有半成品"正是原子写相对直接覆盖写唯一多出来的保证。
+      try { fs.closeSync(fd); } catch { /* 忽略 */ }
+      try { fs.unlinkSync(tmp); } catch { /* 忽略 */ }
+      throw e;
     }
+    try {
+      fs.closeSync(fd);
+    } catch { /* 已关闭或关闭失败都不影响 rename */ }
 
     let staged = false;
     try {
@@ -783,7 +861,9 @@ class KeyStore {
       // 而恢复密钥从来没显示过——他既不知道口令能不能用，也没有逃生门。
       // 这正是"建立唯一逃生门"的那一刻，绝不能留下半成品。
       try { fs.unlinkSync(this.vaultPath); } catch { /* 忽略 */ }
-      try { fs.unlinkSync(this.vaultPath + '.tmp'); } catch { /* 忽略 */ }
+      // 本次写入自己的 tmp 名带 pid + 时间戳，这里不知道是哪一个；
+      // setup 失败时本进程不会再有并发写，includeOwn 是安全的。
+      this._cleanupStaleTmpFiles(true);
       for (let n = 1; n <= BACKUP_COUNT; n++) {
         try { fs.unlinkSync(this.vaultPath + '.bak.' + n); } catch { /* 忽略 */ }
       }
@@ -792,6 +872,8 @@ class KeyStore {
     }
 
     this._dek = dek;
+    // 刚用用户输入的口令建库，等价于"口令槽解开"的会话
+    this._unlockedVia = 'pass';
     this._meta = meta;
     this._resetFailures();
     this._touch();
@@ -838,7 +920,7 @@ class KeyStore {
       throw fail('INTERNAL', '密钥库数据段校验失败，文件可能被篡改');
     }
 
-    this._setDek(dek, meta);
+    this._setDek(dek, meta, 'pass');
     return { expiresAt: this.expiresAt() };
   }
 
@@ -882,13 +964,21 @@ class KeyStore {
       throw fail('INTERNAL', '密钥库数据段校验失败，文件可能被篡改');
     }
 
-    this._setDek(dek, meta);
+    this._setDek(dek, meta, 'recovery');
     return { expiresAt: this.expiresAt() };
   }
 
-  _setDek(dek, meta) {
+  /**
+   * @param {'pass'|'recovery'} via 这个 DEK 是通过哪个槽解开的。
+   *   决定改口令时是否要求旧口令（见 changePassphrase 的注释）。
+   *   新建库（setup）走的是口令路径：此刻口令就是用户刚设的那个。
+   */
+  _setDek(dek, meta, via) {
     if (this._dek) this._dek.fill(0);
     this._dek = dek;
+    // 兜底成 'pass'：调用方漏传时退回"要求旧口令"这条更严格的路径，
+    // 宁可让恢复会话的用户多碰一次要求，也不能悄悄放开口令校验。
+    this._unlockedVia = via === 'recovery' ? 'recovery' : 'pass';
     this._meta = meta;
     this._resetFailures();
     this._touch();
@@ -900,6 +990,7 @@ class KeyStore {
       this._dek.fill(0);
       this._dek = null;
     }
+    this._unlockedVia = null;
     this._meta = null;
     this._lastActivity = 0;
     return true;
@@ -951,28 +1042,50 @@ class KeyStore {
     return true;
   }
 
-  /** 改口令：验证旧口令 → 重新包裹 DEK → 用新 AAD 重加密数据 */
+  /**
+   * 改口令：验证旧口令 → 重新包裹 DEK → 用新 AAD 重加密数据。
+   *
+   * 恢复解锁的会话（_unlockedVia === 'recovery'）跳过第 1 步，原因：
+   * 用户正是因为**忘了口令**才用恢复密钥进来的——他没有旧口令可验。
+   * 会话身份已经由恢复密钥证明了（256 位随机、且解开了整份数据），
+   * 再要求旧口令等于让这个人永远停不了用恢复密钥。
+   *
+   * 安全边界没有被放松：
+   *   · 锁定态在方法最开头就抛 LOCKED —— 没解锁的库根本走不到这里；
+   *   · 新口令照样过 checkPassphrase（跳过旧口令不等于允许弱口令）；
+   *   · 恢复槽照样由 _verifyCurrentRecoverySlot 校验完整性，改完仍然能用；
+   *   · 改完 _unlockedVia 置回 'pass'：此时口令槽已经装的是新口令，
+   *     后续再改就必须验新口令了。
+   */
   changePassphrase(oldPassphrase, newPassphrase) {
-    checkPassphrase(newPassphrase);
-    this._checkThrottle();
     if (!this.exists()) throw fail('NOT_FOUND', '尚未创建密钥库');
+    // 这一条必须排在"是否恢复会话"判断之前，也排在新口令强度校验之前：
+    // 锁定的库不能被改口令，哪怕调用方声称自己是恢复会话、哪怕新口令本身合法。
+    // 先校验强度再判锁定的话，锁定态下会先回 INVALID，语义上像是"库可以改、
+    // 只是口令不合规"，容易把人引到错误的方向。
     if (this._dek === null) throw fail('LOCKED', '密钥库已锁定');
+    this._checkThrottle();
+    checkPassphrase(newPassphrase);
 
     const meta = this._readMeta();
+    const viaRecovery = this._unlockedVia === 'recovery';
 
-    // 1) 验证旧口令（用 wraps.pass，不依赖内存里的解锁状态）
-    try {
-      const kekOld = this._derive(String(oldPassphrase == null ? '' : oldPassphrase), meta.kdf.saltPass, meta.kdf);
+    // 1) 验证旧口令（用 wraps.pass，不依赖内存里的解锁状态）。
+    //    恢复会话跳过——见方法头的注释。
+    if (!viaRecovery) {
       try {
-        const dek = aesGcmDecrypt(kekOld, meta.wraps.pass.iv, meta.wraps.pass.ct,
-          this._wrapAad('pass', meta.kdf.saltPass), null);
-        dek.fill(0);
-      } finally {
-        kekOld.fill(0);
+        const kekOld = this._derive(String(oldPassphrase == null ? '' : oldPassphrase), meta.kdf.saltPass, meta.kdf);
+        try {
+          const dek = aesGcmDecrypt(kekOld, meta.wraps.pass.iv, meta.wraps.pass.ct,
+            this._wrapAad('pass', meta.kdf.saltPass), null);
+          dek.fill(0);
+        } finally {
+          kekOld.fill(0);
+        }
+      } catch {
+        this._recordFailure();
+        throw fail('BAD_PASSPHRASE', '原口令不正确');
       }
-    } catch {
-      this._recordFailure();
-      throw fail('BAD_PASSPHRASE', '原口令不正确');
     }
 
     // 2) 先解出现有明文，才能用新 AAD 重加密
@@ -1031,6 +1144,9 @@ class KeyStore {
     const staleBackups = this._purgeBackups();
 
     this._meta = meta;
+    // 口令槽已经是新口令了，从这里开始这次会话就是"口令解开"的：
+    // 再次改口令必须验这个新口令，不能一直沿用恢复会话的豁免。
+    this._unlockedVia = 'pass';
     this._resetFailures();
     this._touch();
     return { ok: true, staleBackups };
@@ -1111,6 +1227,10 @@ class KeyStore {
     // 旧 KEK 副本，前向安全的漏洞和留着旧 .bak 一模一样，必须一并清。
     rm(p + '.bak.stage');
     rm(p + '.bak.1.tmp');
+    // 带 pid 的 stage / tmp 是同一类东西（上一代主文件的完整密文副本）。
+    // 只清"持有者确定已死"的：另一个实例正在写的 stage 是它下一次 rename
+    // 的源文件，清掉它等于让那个实例的一次保存失败。
+    this._cleanupStaleTmpFiles();
     return failed;
   }
 

@@ -124,6 +124,9 @@ async function api(action, body) {
     const err = new Error(data.error || ('请求失败 HTTP ' + res.status));
     err.status = res.status;
     err.code = data.code || '';
+    // 授权弹窗要显示服务端给出的真实文件路径 —— 猜一个 ~/.keydesk/handshake
+    // 会让用户在错误的位置找一个不存在的文件。路径由服务端在 401 里给出。
+    err.handshakeFile = data.handshakeFile || '';
     throw err;
   }
   return data;
@@ -237,13 +240,139 @@ function onLocked(reason) {
   $('lockSub').textContent = msg + '。请输入主口令。';
   showLockView('unlock');
   state.currentId = keepId;
-  // 重新握手：锁屏上的 status 请求也需要 token
-  handshake().catch(() => { /* 下次操作会重试 */ });
+  // 重新握手：锁屏上的 status 请求也需要 token。
+  // 走 getToken 而不是裸 handshake：cookie 可能在使用中被清掉，那时要重新弹授权框，
+  // 否则锁屏会永远卡在"无法读取密钥库状态"。不在这里额外调 refreshLockState：
+  // 那会把上面刚写好的锁屏文案覆盖成通用文案，用户就看不到"为什么被锁"了。
+  getToken().catch(() => { /* 下次操作会重试 */ });
 }
 
+/**
+ * 弹本机授权框，用授权码换 cookie。resolve(true) 表示已拿到 cookie，
+ * 调用方应重试 handshake；resolve(false) 表示用户放弃。
+ *
+ * 为什么不做"自动读文件"：浏览器读不到本地文件系统 —— 而能在后台自动读到
+ * 秘密的东西，本机其他进程同样能伪装，那正是握手要防的对象。
+ */
+function askHandshakeCode(hintPath) {
+  return new Promise(resolve => {
+    const box = $('modalHandshake');
+    if (!box) { resolve(false); return; }
+
+    const input = $('hsCode');
+    const errEl = $('hsErr');
+    const okBtn = $('hsOk');
+    $('hsPath').textContent = hintPath || '数据目录下的 handshake 文件';
+    errEl.textContent = '';
+    input.value = '';
+    okBtn.disabled = false;
+    okBtn.textContent = '授权';
+    openModal('modalHandshake');
+    input.focus();
+
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      okBtn.removeEventListener('click', submit);
+      input.removeEventListener('keydown', onKey);
+      box.removeEventListener('keydown', onEsc);
+      box.removeEventListener('click', onCancelClick);
+      closeModal('modalHandshake');
+      input.value = '';   // 授权码不留在 DOM 里
+      resolve(ok);
+    };
+
+    const submit = async () => {
+      const code = input.value.trim();
+      if (!code) { errEl.textContent = '请先粘贴授权码'; return; }
+      okBtn.disabled = true;
+      okBtn.textContent = '验证中…';
+      let status = 0;
+      let data = null;
+      try {
+        const r = await fetch('/api?action=handshake.bootstrap', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-KeyDesk-Bootstrap': '1' },
+          body: JSON.stringify({ secret: code }),
+        });
+        status = r.status;
+        data = await r.json().catch(() => null);
+      } catch {
+        errEl.textContent = '无法连接本地服务，确认 KeyDesk 仍在运行';
+        okBtn.disabled = false;
+        okBtn.textContent = '授权';
+        return;
+      }
+      // 200 但没 token 属于异常响应，按失败处理，别当成成功放行
+      if (status === 200 && data && data.token) {
+        finish(true);
+        return;
+      }
+      errEl.textContent = (data && data.error) || ('授权失败（HTTP ' + status + '）');
+      okBtn.disabled = false;
+      okBtn.textContent = '授权';
+      input.select();
+    };
+
+    const onKey = ev => { if (ev.key === 'Enter') { ev.preventDefault(); submit(); } };
+    // ESC 会由全局处理器关掉弹窗。这里必须同时把 promise 收掉，
+    // 否则 getToken 会挂在这个 Promise 上永远不返回，启动流程就此停住。
+    // 监听器挂在弹窗容器上而不是输入框上：焦点可能在「稍后」按钮上。
+    const onEsc = ev => { if (ev.key === 'Escape') finish(false); };
+    // 三条关闭路径都要收尾：点「稍后」/ ✕（data-close）、点遮罩（.modal 本身）、
+    // 以及上面那条 ESC。漏掉任何一条都会让调用方挂着不返回。
+    const onCancelClick = ev => {
+      if (ev.target.closest('[data-close="modalHandshake"]')) { finish(false); return; }
+      if (ev.target === box) finish(false);
+    };
+
+    okBtn.addEventListener('click', submit);
+    input.addEventListener('keydown', onKey);
+    box.addEventListener('keydown', onEsc);
+    box.addEventListener('click', onCancelClick);
+  });
+}
+
+/**
+ * 拿会话 token。
+ *
+ * 必须把「没授权」和「服务没起来」分开报：两者混成一句"无法连接本地服务"，
+ * 用户会对着已经启动的服务反复重试，永远不知道该去粘贴授权码。
+ * 401 + HANDSHAKE_REQUIRED 是唯一该弹授权框的信号；其余错误原样抛出。
+ */
 async function handshake() {
   const hs = await api('handshake');
   state.token = hs.token;
+}
+
+async function getToken() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      await handshake();
+      return;
+    } catch (e) {
+      if (e && e.status === 401 && e.code === 'HANDSHAKE_REQUIRED') {
+        if (attempt === 0) {
+          // 授权成功后 cookie 已种好，再走一轮 handshake 取 token
+          const done = await askHandshakeCode(e.handshakeFile);
+          if (!done) {
+            // 带上 401：boot() 靠它区分"用户在授权框点了放弃"与"服务连不上"，
+            // 两者的处置完全不同（前者等用户动作，后者要用户去启动服务）。
+            const giveUp = new Error('未完成本机授权，无法访问密钥库');
+            giveUp.status = 401;
+            throw giveUp;
+          }
+          continue;
+        }
+        const expired = new Error('本机授权已失效，请刷新页面重试');
+        expired.status = 401;
+        throw expired;
+      }
+      throw e;
+    }
+  }
+  throw new Error('本机授权失败');
 }
 
 /**
@@ -2238,9 +2367,13 @@ async function boot() {
   bindGlobalEvents();
   bindDetailDelegation();
   try {
-    await handshake();
+    await getToken();
   } catch (e) {
-    $('lockSub').textContent = '无法连接本地服务：' + e.message;
+    // 这里只处理"拿不到 token"的终局。授权流程已经在 getToken 里走过，
+    // 所以能走到这里的不是用户在授权框点了放弃，就是服务真没起来。
+    $('lockSub').textContent = (e && e.status === 401)
+      ? '需要本机授权：' + e.message
+      : '无法连接本地服务：' + e.message;
     return;
   }
   await refreshLockState();

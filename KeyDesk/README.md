@@ -27,6 +27,21 @@ node server.js
 
 然后打开终端打印的地址（默认 `http://127.0.0.1:2151`）。
 
+**第一次打开会要求粘贴一次本机授权码。** 它存在 `~/.keydesk/handshake`
+（Windows 上是 `C:\Users\你的用户名\.keydesk\handshake`），用记事本打开、整行 64 位
+十六进制复制过来即可。只需做一次，之后这个浏览器会记住（cookie 有效期一年）。
+
+为什么要这一步：服务只监听回环地址，但**本机上的任意进程**都能连这个端口。如果没有
+这道门，任何同机程序一个 `GET /api?action=handshake` 就能拿到 token，进而读取你的全部
+TOTP 明文。授权码只存在于你的用户目录里，别的账户读不到。
+
+不想用浏览器的话，脚本可以直接带请求头：
+
+```bash
+curl -H "X-KeyDesk-Handshake: $(cat ~/.keydesk/handshake)" \
+  "http://127.0.0.1:2151/api?action=handshake"
+```
+
 首次使用会让你设一个主口令，**并强制回填恢复密钥的第 2、5、7 段**——抄错就进不去，
 所以这一次必须真抄下来。这不是刁难：恢复密钥关闭后无法再查看，三个月后真要恢复时
 才发现没抄，那时已经没有任何补救办法。
@@ -170,10 +185,10 @@ secret 全程不进浏览器内存。浏览器只拿到 6 位数字。
 | 键盘记录 / 录屏 | ❌ | 口令和验证码都会经过 |
 | 浏览器扩展 | ❌ | 能读页面，等价于拿到验证码 |
 | 忘口令且丢恢复密钥 | ❌ | 设计如此，没有任何后门 |
-| **本机其他进程** | ❌ | ⚠️ **KeyDesk 的握手不验本机秘密**（不像 MailDesk）。库处于解锁状态时，同机任意进程只要知道端口，一个 HTTP 请求就能拿到 token，进而读取全部 TOTP 明文、导出全库、**甚至把空闲锁定设成 0（永久不锁）**。这是当前已知的最实际威胁 |
-| **解锁态被长期持有** | ❌ | 空闲锁可被 `settings.json` 改成 0（明文存储、无校验），改后重启仍生效 |
+| **本机其他进程** | ❌ | 握手需要 `~/.keydesk/handshake` 里的本机秘密（与 MailDesk 同一套机制），没有秘密拿不到 token。但**同用户**运行的任意代码能读到这个文件，从而完全控制密钥库 —— 这条路无法用应用层鉴权堵住 |
+| **解锁态被长期持有** | ❌ | 空闲锁可被 `settings.json` 改成 0（明文存储、无校验），改后重启仍生效。不过改它本身要先有 token，也就是要先过握手 |
 | **改口令后旧备份失效** | ❌ | 改口令**不换 DEK**。任何一份历史 `vault.enc` 副本 + 旧口令 = 永久可解**当前**数据。不是"云盘 30 天窗口"，是你复制过的每一份备份。口令曾泄露时，改口令不等于止损，只能重建密钥库 |
-| **用恢复密钥解锁后改口令** | ❌ | ⚠️ 当前版本**做不到**：`changePassphrase` 要求原口令，恢复解锁后调它会返回 `BAD_PASSPHRASE`。已知缺陷，见 README 末节 |
+| **用恢复密钥解锁后改口令** | ✅ | 恢复解锁的会话可以**直接设新口令**，不需要原口令。改完后恢复密钥仍然可用（逃生门不能丢），旧口令同时失效 |
 
 **最重要的是第一行**。后几类不是这个工具能解决的，那种情况下唯一的防线是硬件密钥。
 
@@ -204,12 +219,13 @@ secret 全程不进浏览器内存。浏览器只拿到 6 位数字。
 KeyDesk/
 ├── server.js          # HTTP 服务 + API 路由 + 安全头
 ├── start.bat          # Windows 一键启动
-├── selftest.js        # 226 项功能自检（含 RFC 6238 全部官方向量）
-├── security-test.js   # 71 项安全回归
+├── selftest.js        # 241 项功能自检（含 RFC 6238 全部官方向量）
+├── security-test.js   # 84 项安全回归
 ├── qr-decode-test.js  # 二维码反向解码（仅测试用，交叉验证 qr.js）
 ├── lib/
 │   ├── totp.js        # TOTP 算法（RFC 6238/4226）
 │   ├── keystore.js    # 密钥管理（scrypt + 双槽 GCM 包裹）
+│   ├── instance-lock.js # 单实例锁（防双开写坏 vault.enc）
 │   ├── store.js       # 条目 CRUD + 字段校验
 │   └── qr.js          # 二维码生成（纯 JS，内联 SVG）
 ├── public/
@@ -226,8 +242,8 @@ KeyDesk/
 ## 自检
 
 ```
-node selftest.js        # 226 项
-node security-test.js   # 71 项
+node selftest.js        # 241 项
+node security-test.js   # 84 项
 ```
 
 `selftest.js` 里有 **RFC 6238 附录 B 的全部测试向量**（SHA1/SHA256/SHA512 × 6 个时间点）。
@@ -253,7 +269,7 @@ set KEYDESK_PORT=2200 && node server.js
 
 | 组 | action |
 |---|---|
-| 会话 | `handshake` |
+| 会话 | `handshake` `handshake.bootstrap` |
 | 密钥库 | `vault.status` `vault.setup` `vault.unlock` `vault.unlockRecovery` `vault.lock` `vault.changePassphrase` `vault.regenerateRecovery` `vault.settings` |
 | 条目 | `entries.list` `entries.get` `entries.upsert` `entries.remove` `entries.archive` |
 | 验证码 | `otp.codes` `otp.check` `otp.verify` |
@@ -315,36 +331,11 @@ ECC level M、Reed-Solomon 纠错、8 个掩码的罚分评估、格式信息 BC
 
 以下问题是公开审查时确认的，**在当前版本里真实存在**，修复前请自行判断风险。
 
-### 1. 握手不验本机秘密 —— 同机进程可读光明文
+> **0.1.0-SNAPSHOT 之后修复的**：握手不再无条件发 token（现在要 `~/.keydesk/handshake`）、
+> 加了实例锁（双开会拒绝启动而不是写坏 `vault.enc`）、恢复密钥解锁后可以直接改口令。
+> 这三条在下面不再列为缺陷。
 
-MailDesk 的握手需要 `~/.maildesk/handshake` 里的本机秘密；**KeyDesk 没有这道门**。
-库处于解锁状态时，同机任意进程只要知道端口，就能：
-
-```
-GET  /api?action=handshake          → 免费拿到 token
-GET  /api?action=entries.list       → 列出全部条目
-POST /api?action=secrets.reveal     → 拿到明文 TOTP secret
-POST /api?action=vault.settings     → 把空闲锁定设成 0（永久不锁，写盘持久化）
-```
-
-**缓解**：不用时立刻点「锁定」；不要在共享机器上跑；不要在解锁状态下离开电脑。
-
-### 2. 没有实例锁 —— 双开会损坏 `vault.enc`
-
-双击两次 `start.bat` 会让第二个实例顺延端口照样启动，两个进程共用固定的
-`vault.enc.tmp`，一个进程的写入可能被另一个截断，导致整库 JSON 损坏。
-
-**缓解**：只运行一个实例。第二个窗口启动时如果端口不是 2151，立刻关掉它。
-
-### 3. 恢复密钥解锁后改不了口令
-
-README 之前写过"忘了口令 → 用恢复密钥解锁 → 立刻改口令"，**这条路当前走不通**：
-`changePassphrase` 要求提供原口令，用恢复密钥解锁后调用会返回 `BAD_PASSPHRASE`。
-
-**当前可行的做法**：用恢复密钥解锁后，把全部条目导出（`entries.export`，明文
-otpauth URI），然后**新建一个密钥库**，再逐条导入。
-
-### 4. 改口令不换 DEK —— 旧备份永久可解当前数据
+### 1. 改口令不换 DEK —— 旧备份永久可解当前数据
 
 改口令时 DEK 不变（为了保住恢复槽，这个取舍本身是对的）。但由此可以推出：
 **任何一份历史 `vault.enc` 副本 + 旧口令 = 永久可解当前数据。**
@@ -354,7 +345,7 @@ otpauth URI），然后**新建一个密钥库**，再逐条导入。
 对手拿到，并把里面的 TOTP secret 全部重新生成（去每个网站重绑 2FA），或者
 直接重建密钥库。
 
-### 5. 加密导出包无法在本工具内恢复
+### 2. 加密导出包无法在本工具内恢复
 
 `export.encrypted` 能生成加密备份包，但**没有对应的导入入口**。目前只能靠
 自己写脚本调用 `store.js` 的 `openExport()` 解开。
