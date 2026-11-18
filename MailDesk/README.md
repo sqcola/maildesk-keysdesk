@@ -367,8 +367,9 @@ node tools/check-key.js --purge-legacy
 ## 自检
 
 ```
-node selftest.js        # 146 项功能用例
-node security-test.js   # 55 项安全回归用例
+node selftest.js        # 159 项功能用例
+node security-test.js   # 64 项安全回归用例
+node tools/check-key-test.js  # 27 项（v1/v2/混装库、退出码、purge）
 ```
 
 `selftest.js` 覆盖：模块加载、IMAP ENVELOPE 解析（含中文/GBK）、MIME 解析（纯文本/base64/quoted-printable/multipart）、邮件构造、加密存储往返、磁盘无明文验证、错误归类、路径穿越防护、TLS 配置检查、验证码提取（16 种模板）、剪贴板实现、端点自动探测、refresh_token 轮换持久化、批量收码 job 管理器、验证码历史加密与字段校验、密钥分离（五个迁移分支全覆盖）。
@@ -408,11 +409,12 @@ node security-test.js   # 55 项安全回归用例
 MailDesk/
 ├── server.js            # HTTP 服务、API 路由、安全头、退出协调
 ├── start.bat            # Windows 一键启动
-├── selftest.js          # 146 项功能自检
-├── security-test.js     # 55 项安全回归
+├── selftest.js          # 159 项功能自检
+├── security-test.js     # 64 项安全回归
 ├── .gitignore           # 排除 data/、vault.key、.maildesk/
 ├── tools/
-│   └── check-key.js     # 密钥体检：判断哪份 vault.key 能解开账户库
+│   ├── check-key.js     # 密钥体检：判断哪份 vault.key 能解开账户库
+│   └── check-key-test.js # 上述工具的 27 项测试（含 v1/v2/混装库）
 ├── lib/
 │   ├── imap-client.js   # 自写 IMAP 客户端（TLS + XOAUTH2 + FETCH）
 │   ├── smtp.js          # 自写 SMTP 客户端（STARTTLS + XOAUTH2 + 发送）
@@ -463,6 +465,11 @@ MailDesk/
 
 ## ⚠️ 已知缺陷（0.1.0-SNAPSHOT）
 
+> **0.1.0-SNAPSHOT 之后修复的**：验证码历史补上了完整界面（列表 / 筛选 / 标记 /
+> 导出 / 清理）；`check-key.js` 现在能正确解开 v2 库；`accounts.enc` 与
+> `history.enc` 每次写盘后都保持收紧的 ACL（不再退回继承态）；批量扫描的硬时限
+> 改为按任务规模推导，不再固定 15 分钟误杀大任务。
+
 ### 1. 必须自己准备 `client_id` + `refresh_token`，工具内没有授权流程
 
 本工具**只接受** `client_id` 和 `refresh_token`（微软已禁用密码登录），
@@ -477,32 +484,3 @@ README 里目前没有写这个流程 —— 这是已知的文档缺口。
 
 IMAP 和 SMTP 主机名是硬编码的（`outlook.office365.com` / `smtp-mail.outlook.com`），
 认证只支持 `XOAUTH2`。**Gmail、自建域名邮箱、其他 IMAP 服务商都加不进来。**
-
-### 3. 验证码历史：后端已实现，界面上没有入口
-
-`history.list` / `history.mark` / `history.clear` / `history.export` 四个 API 都已实现，
-数据也确实加密落盘了，但**前端没有任何界面入口**。当前只能通过直接调 API 使用。
-
-### 4. `check-key.js` 在 v2 库上会误报"解不开"
-
-`tools/check-key.js` 没有做 AAD 处理，而当前账户库是 v2 格式（每条密文都绑了
-`maildesk/2|<id>` 的 AAD）。所以**即使密钥是对的，这个工具也会报"认证失败"**，
-退出码非 0。
-
-**在"两份 vault.key 内容不同、程序拒绝启动"的场合不要依赖它。** 判断哪把钥匙
-正确的方法是：备份好两份，逐个试启动，能解开全部账户的那把才是对的。
-
-### 5. 运行期间 `accounts.enc` 的 ACL 会退回继承状态
-
-启动时会用 `icacls` 把密钥和账户库收紧到只有当前用户，但**每次保存之后 ACL 都会
-退回继承状态**（rename 后新文件带的是父目录的 ACL），直到下次重启才会重新收紧。
-
-**缓解**：不要把 `data/` 放在人可写的共享目录；同机如果有其他管理员账户，
-在存敏感账户时注意这一点。`history.enc` 同理，而且它从来没有被收紧过。
-
-### 6. 批量扫描 300 个账户可能被 15 分钟硬限截断
-
-任务硬时限是 15 分钟，而单账户扫一次要 5–25 秒、并发固定 3。按 10 秒/账户算，
-300 个需要约 16.7 分钟——**会被中途掐断**，用户只看到"任务超过 15 分钟硬时限"。
-
-**缓解**：一次别选太多（100 个以内比较稳），或分几批扫。

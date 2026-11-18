@@ -19,6 +19,9 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+// 与 vault.js 共用同一份 ACL 收紧实现（见 _write 里的注释）。
+// vault.js 不 require 本模块，不构成循环依赖。
+const { tightenAcl } = require('./vault');
 
 const FILE_VERSION = 1;
 const MAX_ITEMS = 2000;          // 最多留 2000 条
@@ -154,7 +157,22 @@ class History {
     return { version: FILE_VERSION, items: sortItems(items) };
   }
 
-  /** 加密 + 原子写，权限 0600 */
+  /**
+   * 加密 + 原子写，权限 0600。
+   *
+   * ACL 处理与 vault.js 的 save() 完全同构，理由见那里的长注释：
+   * NTFS 的 rename 保留的是**被移动文件自己**的 ACL，不是被覆盖目标的 ACL。
+   * 所以「write tmp → rename → 之后才收紧主文件」这条路走不通：下一轮
+   * rename 会用一个继承态的新 tmp 把它换掉，ACL 退回父目录的继承态。
+   * 正确顺序是 write → close → 收紧 tmp → rename，让 rename 把收紧后的
+   * ACL 原样带到 history.enc 上。
+   *
+   * 为什么这里值得管：history.enc 里是验证码历史，含邮箱地址和验证码原文
+   * （加密后），与 accounts.enc 同级敏感 —— 拿到验证码就等于能登进那个邮箱。
+   *
+   * tmp 名带 pid + 时间戳的理由与 vault.js 相同：固定名 `.tmp` 在两个实例
+   * 并发写时会被互相截断/撕碎，最终把主文件污染成解不开的密文。
+   */
   _write(items) {
     const payload = JSON.stringify({
       version: FILE_VERSION,
@@ -164,10 +182,25 @@ class History {
     const cipher = this.vault.encryptText(payload);
     const dir = path.dirname(this.filePath);
     try { fs.mkdirSync(dir, { recursive: true }); } catch { /* 已存在 */ }
-    const tmp = this.filePath + '.tmp';
+    const tmp = this.filePath + '.tmp-' + process.pid + '-' + Date.now();
     fs.writeFileSync(tmp, cipher, { mode: 0o600 });
+    // chmod 在 Windows 上是 no-op（只切只读位），留着是为了 POSIX 上的 0600。
+    // 它**不能**替代下面的 tightenAcl：Windows 的继承 ACE 一点没动。
     try { fs.chmodSync(tmp, 0o600); } catch { /* Windows 上语义有限 */ }
-    fs.renameSync(tmp, this.filePath);   // 原子替换，避免写一半断电留下半份历史
+    try {
+      // 必须在 rename 之前收紧 tmp：rename 带过去的就是这一份 ACL。
+      // 直接用 vault.js 里那一个实现（模块级 require，不绕实例），
+      // 避免第二份 icacls 逻辑各写各的、将来只修好一处。
+      tightenAcl(tmp);
+    } catch { /* 收紧失败不阻断落盘，下次写入会再试 */ }
+    try {
+      fs.renameSync(tmp, this.filePath);   // 原子替换，避免写一半断电留下半份历史
+    } catch (e) {
+      // rename 失败（杀毒软件锁文件、权限、跨盘）：删掉本次的 tmp 再抛。
+      // 不删的话每失败一次数据目录里就多一个残骸，而残骸里是加密的验证码。
+      try { fs.rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
+      throw e;
+    }
   }
 
   /* ---------------- 内部：字段校验 ---------------- */

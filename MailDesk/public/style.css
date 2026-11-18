@@ -1801,3 +1801,330 @@ textarea { resize: vertical; line-height: 1.5; }
   padding: 0 2px;
 }
 
+
+/* ============================================================
+ * 验证码历史（独立视图）
+ * ------------------------------------------------------------
+ * 与 .content 互斥：打开历史页时 .content 由脚本置 hidden，
+ * 这里不做任何 display 覆盖，避免和 [hidden] { display:none !important } 打架。
+ * ============================================================ */
+
+/* 屏幕阅读器专用：1px 盒子 + clip，对 AT 而言仍是页内正常节点。
+ * 不能用 top:-1000px / opacity:0 那套——实测部分读屏器会因
+ * "不可见内容"跳过 aria-live 更新（KeyDesk 里踩过同一个坑）。 */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+/* #srStatus 带 aria-live，必须与上面的规则并存（显式声明一次，防止将来
+ * 有人给 .visually-hidden 加 opacity:0 把播报弄哑）。 */
+#srStatus {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  opacity: 1;
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 入口按钮的"当前在这一页"状态：不是选中的 tab，但必须看得出区别 */
+#btnHistory.active {
+  background: var(--primary-soft);
+  border-color: #bfdbfe;
+  color: var(--primary);
+  font-weight: 600;
+}
+
+.history-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  /* 视图可聚焦（tabindex=-1）但不能出现焦点环——它不是可交互元素 */
+  outline: none;
+}
+.history-view:not([hidden]) { animation: panelIn .2s ease-out; }
+
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.history-head-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+#historyTitle {
+  font-size: 15px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.history-status {
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+  word-break: break-word;
+}
+#btnHistoryBack { flex: 0 0 auto; }
+
+.history-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 12px;
+  padding: 10px 20px;
+  background: #fbfcfd;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.hist-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.hist-field-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+.hist-field-q { flex: 1 1 220px; }
+.hist-field select { width: 156px; }
+.hist-field-q input { width: 100%; }
+.hist-only-unused {
+  /* .chk 是 inline-flex 且 align-items:center；这里要跟 select 底部对齐 */
+  height: 34px;
+  font-size: 12px;
+  color: var(--text);
+}
+.history-filter-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.history-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.history-bulk,
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+#histSelCount {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+}
+/* 危险按钮在工具栏里不该像主操作一样抢眼，但必须有明确的红 */
+#btnHistClear { color: var(--bad); border-color: #fecaca; background: #fff; }
+#btnHistClear:hover:not(:disabled) { background: #fef2f2; }
+
+.history-list-wrap {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+.history-list { min-width: 0; }
+
+.history-loading {
+  padding: 18px 20px 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+/* 骨架：与邮件列表同一套 .skel-bar，但按表格的列宽排 */
+.hist-skel {
+  display: grid;
+  grid-template-columns: 40px minmax(160px, 1fr) 96px minmax(120px, .8fr);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 20px;
+  border-bottom: 1px solid #f2f4f6;
+}
+.hist-skel .skel-bar { height: 11px; margin: 0; }
+
+/* 表格：border-collapse 让行底边与表头下边框合成一条，不会出现双线 */
+.hist-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.hist-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.hist-table td {
+  padding: 9px 10px;
+  border-bottom: 1px solid #f2f4f6;
+  vertical-align: middle;
+  /* 表格里的长邮箱 / 长域名绝不撑破布局 */
+  overflow-wrap: anywhere;
+}
+.hist-row:hover { background: var(--row-hover); }
+/* 选中行给背景 + 左侧竖条：复选框太小，长表格里一眼看不出选了哪几行 */
+.hist-row.sel {
+  background: var(--row-active);
+  box-shadow: inset 3px 0 var(--primary);
+}
+
+/* 已用条目视觉弱化，但必须仍然可读：
+ * 只降低颜色到 --muted（白底 6.4:1），绝不降到 --text-3 以下的浅灰，
+ * 也绝不加 opacity——那会让 --bad/--ok 这类状态色一起变淡到不可读。 */
+.hist-row.used .hist-code,
+.hist-row.used .hist-col-email {
+  color: var(--muted);
+}
+.hist-row.used { background: #fbfcfd; }
+.hist-row.used.sel { background: var(--row-active); }
+
+.hist-col-check { width: 34px; }
+.hist-col-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+.hist-col-email {
+  min-width: 150px;
+  word-break: break-all;
+}
+.hist-col-code {
+  white-space: nowrap;
+  width: 1%;   /* 让这一列按内容收紧，把空间留给邮箱和域名 */
+}
+.hist-code {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: .5px;
+  color: var(--text);
+  user-select: all;
+}
+.hist-copy,
+.hist-mark {
+  margin-left: 8px;
+  padding: 3px 9px;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--primary);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hist-copy:hover,
+.hist-mark:hover { background: #eff6ff; border-color: var(--primary); }
+.hist-copy:active,
+.hist-mark:active { background: #dbeafe; }
+/* 反馈态宽度锁死，避免"复制 → 已复制 ✓"把这一行推一下 */
+.hist-copy,
+.hist-mark { min-width: 52px; }
+.hist-copy.copied { min-width: 70px; }
+/* 标为未用是"撤销"，用中性灰；标为已用是主方向，用蓝 */
+.hist-mark[data-hist-used="0"] {
+  border-color: var(--border);
+  color: var(--muted);
+}
+.hist-mark[data-hist-used="0"]:hover {
+  background: #f3f4f6;
+  border-color: #d5d9e0;
+  color: var(--text);
+}
+
+/* 发件域：和结果板同一套防钓鱼展示（末两级加粗），且绝不省略 */
+.hist-col-domain {
+  min-width: 130px;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+.hist-col-domain b { color: var(--text); font-weight: 700; }
+.hist-col-time {
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.hist-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.hist-badge.unused { background: #eff6ff; color: var(--primary); border: 1px solid #dbeafe; }
+/* 已用：浅灰底 + --muted 文字（4.6:1 以上），不是低对比到看不见 */
+.hist-badge.used { background: #f1f3f6; color: #4b5563; border: 1px solid #e3e6ea; }
+
+.history-empty-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+@media (max-width: 1100px) {
+  .history-filters { padding: 9px 12px; }
+  .history-toolbar { padding: 8px 12px; }
+  .history-head { padding: 10px 12px; }
+  .hist-field select { width: 138px; }
+  .hist-table th, .hist-table td { padding: 8px 8px; }
+}
+
+@media (max-width: 900px) {
+  .history-filters { flex-direction: column; align-items: stretch; }
+  .hist-field, .hist-field select, .hist-field-q { width: 100%; }
+  /* 关键：.hist-field-q 为了在横向排布里吃掉剩余宽度写的是 flex:1 1 220px。
+   * 容器一旦改成纵向，flex-basis 就变成了**高度**基准，搜索框会被撑到
+   * 220px 高、下面留一大片空白。纵向时必须以内容高度为准。 */
+  .hist-field-q { flex: 0 0 auto; }
+  .hist-only-unused { height: auto; padding: 2px 0; }
+  .history-filter-actions { margin-left: 0; justify-content: flex-end; }
+  .history-bulk, .history-actions { width: 100%; }
+  .history-actions { justify-content: flex-end; }
+  /* 窄屏：表格结构不能靠隐藏列来收窄（会错位），改成整表横向滚动 */
+  .history-list-wrap { overflow: auto; }
+  .hist-table { min-width: 720px; }
+}

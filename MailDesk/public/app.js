@@ -179,6 +179,21 @@ const state = {
   scanAutoCopyLocked: false,
   scanBoardDismissed: false,
   diagSeq: 0,          // 端点诊断的序号（竞态守卫：快速开两个账户的诊断）
+
+  /* 验证码历史（独立视图）。items 是服务端返回的**当前筛选下**的那一页（≤500 条），
+   * total 是同一筛选条件下的总数（可能大于 items.length）。
+   * selected 只存 id：渲染会整表重绘，不能把勾选状态存在 DOM 里。 */
+  history: {
+    items: [],
+    total: 0,
+    selected: new Set(),
+    seq: 0,             // 竞态守卫：切筛选时作废在途响应
+    loading: false,
+    writing: false,     // 标记在途：防止连点叠加写请求
+    open: false,
+    emptyReason: '',    // none | filtered | unknown | checking
+    filters: { q: '', accountId: '', onlyUnused: false, sinceHours: '' },
+  },
 };
 
 /* ============ 可变模块级状态（弹窗 / 菜单）============
@@ -228,9 +243,34 @@ async function api(action, body) {
     // ok:false 是服务端明确拒绝（任务不存在/已过期也算），不是网络抖动
     err.apiOkFalse = !!(data && data.ok === false);
     err.code = data && data.code != null ? String(data.code) : '';
+    // 服务端同时给了 error（细节，如"单账号扫描超时（25 秒），已断开连接"）
+    // 和 reason（归类，如"网络超时或连接被重置"），两者都已脱敏。
+    // 以前只读 error，reason 算完就被丢掉；挂在这里供展示层在不改变
+    // err.message 语义的前提下补充归类信息。
+    err.reason = data && data.reason != null ? String(data.reason) : '';
     throw err;
   }
   return data;
+}
+
+/**
+ * 统一的错误展示文案：以 err.message 为准，reason 只在**有内容且与 message
+ * 不同**时追加在后面。
+ *
+ * 为什么单独抽一个函数：服务端在错误响应里同时给了 error（细节，如"单账号
+ * 扫描超时（25 秒），已断开连接"）和 reason（归类，如"网络超时或连接被
+ * 重置"），两个都脱敏过。此前前端只读 error，reason 算完就被丢掉 —— 于是
+ * 500 类错误用户只能看到"服务器内部错误，详见终端日志"，而真正的归类
+ * （超时 / 证书 / 令牌失效）就在响应里，却没人展示。
+ *
+ * 注意：绝不改写 err.message 本身。批量收码轮询等处按 message 文本做过
+ * 判断，改语义会连带改坏那些分支。
+ */
+function errText(err, fallback) {
+  const msg = err && err.message ? String(err.message) : (fallback || '未知错误');
+  const reason = err && err.reason ? String(err.reason) : '';
+  if (!reason || reason === msg) return msg;
+  return msg + '（' + reason + '）';
 }
 
 /* ============ DOM 帮助 ============ */
@@ -285,6 +325,23 @@ function toast(msg, type = 'ok') {
   el.className = 'toast show ' + type;
   clearTimeout(el._t);
   el._t = setTimeout(() => { el.className = 'toast'; }, 3200);
+}
+
+/**
+ * 屏幕阅读器播报（#srStatus 见 index.html）。
+ *
+ * 为什么不能只靠 toast：toast 是视觉反馈，读屏用户看不见。而"已标记为已用"
+ * "已清理 12 条"这类操作不改变页面结构（行还在、只是样式变了），
+ * 读屏器不会主动重读，用户会觉得"点了没反应"。aria-live 是唯一的通知渠道。
+ *
+ * 同一个字符串连续播两次时部分读屏器不会重读，末尾补一个零宽空格破重。
+ * 元素不存在时静默跳过：不能因为缺一个纯无障碍节点让功能整体抛错。
+ */
+function announce(msg) {
+  const el = $('srStatus');
+  if (!el) return;
+  const s = String(msg == null ? '' : msg);
+  el.textContent = el.textContent === s ? s + '\u200B' : s;
 }
 
 function fmtDate(iso) {
@@ -900,7 +957,9 @@ function renderPlatformEditor() {
   const box = $('pfEditor');
   if (!box) return;
   const acc = currentAccount();
-  if (!acc) {
+  // 历史视图打开时这块必须藏起来：它不属于邮件区，不会跟着 #mailContent 一起隐藏。
+  // 不判断的话，历史页开着点侧栏账户，账户信息条会突然横在历史表格上面。
+  if (!acc || state.history.open) {
     box.hidden = true;
     return;
   }
@@ -1343,13 +1402,619 @@ async function exportPlatforms() {
     const n = Number(d && d.count) || 0;
     toast(`已导出 ${n} 个账户的平台清单`);
   } catch (e) {
-    toast((e && e.message) || '导出失败', 'err');
+    toast(errText(e, '导出失败'), 'err');
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-/* ============ 渲染：邮件列表 ============ */
+/* ============ 验证码历史 ============ */
+/*
+ * 后端 history.* 四个 action 早就写好了，但前端一直没有入口（"history" 在
+ * app.js 里出现 0 次），用户永远看不到这些记录。这一节把它接出来。
+ *
+ * 为什么做成独立视图而不是弹窗：
+ *  - 它是一张需要反复筛选、多选、逐行操作的表，弹窗里既待不住，Esc 一按
+ *    筛选条件全丢；
+ *  - 与邮件区是并列的两种"浏览对象"，不是某个账户的附属面板。
+ * 视图切换隐藏邮件区（.content / #codePanel / #pfEditor / #mailToolbar），
+ * 但批量收码的进度与结果板保持原样：那是一次全局任务的进度，不属于
+ * 某个账户，扫着码的时候切过来看历史仍然要能看到它。
+ */
+let histSearchTimer = null;
+
+const HIST_LIMIT = 200;   // 契约上限 500；200 条已经远超一屏，再大只是拖慢解密
+
+/** 历史页里的统一时间格式：必须带年份和日期，历史记录跨天很常见 */
+function fmtHistTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 把当前筛选条件描述成一句人话，用于等待态与空态（让用户知道为什么空） */
+function histFilterParts() {
+  const f = state.history.filters;
+  const parts = [];
+  const q = String(f.q || '').trim();
+  if (q) parts.push(`搜索「${q}」`);
+  if (f.accountId) {
+    const acc = state.accounts.find(a => String(a.id) === String(f.accountId));
+    parts.push('账户 ' + (acc && acc.email ? acc.email : '（已不在账户列表）'));
+  }
+  if (f.onlyUnused) parts.push('只看未用');
+  if (f.sinceHours) {
+    const n = Number(f.sinceHours);
+    const label = n === 1 ? '1 小时' : n === 24 ? '24 小时'
+      : n === 72 ? '3 天' : n === 168 ? '7 天' : n + ' 小时';
+    parts.push('最近 ' + label);
+  }
+  return parts;
+}
+
+/** 当前是否存在任何筛选条件 */
+function histHasFilters() {
+  const f = state.history.filters;
+  return !!(String(f.q || '').trim() || f.accountId || f.onlyUnused || f.sinceHours);
+}
+
+/**
+ * 账户下拉的数据源。复用 state.accounts（不额外发请求），
+ * 但当前选中账户已不在列表里时仍要保留一个选项：
+ * 否则 select.value 被浏览器重置成 ''，界面显示"全部账户"、
+ * state 里却还按旧 id 过滤，列表空得莫名其妙。
+ */
+function renderHistoryAccountFilter() {
+  const sel = $('histAccount');
+  if (!sel) return;
+  const cur = state.history.filters.accountId;
+  const opts = state.accounts.map(a => ({ id: String(a.id), email: String(a.email || '') }));
+  const hasCur = opts.some(o => o.id === cur);
+  sel.innerHTML = '<option value="">全部账户</option>' + opts.map(o =>
+    `<option value="${esc(o.id)}">${esc(o.email)}</option>`
+  ).join('') + (cur && !hasCur
+    ? `<option value="${esc(cur)}">已不在列表的账户</option>`
+    : '');
+  sel.value = cur || '';
+}
+
+/** 打开历史视图：隐藏邮件区、把焦点交给视图容器、按当前筛选拉数据 */
+function showHistoryView() {
+  if (state.history.open) return;
+  state.history.open = true;
+  $('historyView').hidden = false;
+  // 邮件区的三块：正文/列表、验证码面板、平台编辑区，外加属于"当前账户邮件"
+  // 的工具栏。批量收码的进度和结果板不隐藏（那是一次全局任务的进度，
+  // 不属于某个账户，扫着码切过来看历史仍然要看得到进度）。
+  $('mailContent').hidden = true;
+  $('mailToolbar').hidden = true;
+  $('codePanel').hidden = true;
+  $('pfEditor').hidden = true;
+  const btn = $('btnHistory');
+  btn.classList.add('active');
+  btn.setAttribute('aria-pressed', 'true');
+  renderHistoryAccountFilter();
+  // 焦点进容器（tabindex="-1"）：键盘用户切页后不会还停在已被隐藏的邮件区，
+  // 下一次 Tab 从历史页内部开始。
+  try { $('historyView').focus({ preventScroll: true }); } catch { /* 忽略 */ }
+  loadHistory();
+}
+
+/** 退出历史视图：恢复邮件区，焦点还给入口按钮 */
+function hideHistoryView() {
+  if (!state.history.open) return;
+  state.history.open = false;
+  // 在途响应作废：返回后它们不能再写历史页的 DOM
+  state.history.seq++;
+  $('historyView').hidden = true;
+  $('mailContent').hidden = false;
+  $('mailToolbar').hidden = false;
+  // codePanel 的显隐由 .show 类决定，摘掉 hidden 即恢复原样
+  $('codePanel').hidden = false;
+  // pfEditor 的显隐取决于当前账户，交给它自己的渲染函数判断
+  renderPlatformEditor();
+  const btn = $('btnHistory');
+  btn.classList.remove('active');
+  btn.setAttribute('aria-pressed', 'false');
+  if (btn.isConnected) {
+    try { btn.focus({ preventScroll: true }); } catch { /* 忽略 */ }
+  }
+}
+
+/** 状态行：平时显示汇总，加载/写入时显示"正在做什么"（over 参数为一次性文案） */
+function renderHistoryStatus(over) {
+  const el = $('historyStatus');
+  if (!el) return;
+  if (over !== undefined) {
+    el.textContent = String(over);
+    return;
+  }
+  const h = state.history;
+  if (h.loading) {
+    el.textContent = '正在读取验证码历史…';
+    return;
+  }
+  const items = h.items;
+  const unused = items.filter(it => !it.usedAt).length;
+  let s = `共 ${h.total} 条`;
+  if (h.total > items.length) s += `，显示最新 ${items.length} 条`;
+  s += ` · 本页未用 ${unused} 条`;
+  const parts = histFilterParts();
+  if (parts.length) s += ' · 筛选：' + parts.join('、');
+  el.textContent = s;
+}
+
+/** 历史列表加载中的骨架：只在真的慢了（>250ms）才出现，避免本地服务下闪烁 */
+function histSkeletonHtml(text) {
+  const rows = [72, 58, 80, 64, 76].map(w =>
+    `<div class="hist-skel">
+       <div class="skel-bar" style="width:34px"></div>
+       <div class="skel-bar" style="width:${w}%"></div>
+       <div class="skel-bar" style="width:88px"></div>
+       <div class="skel-bar" style="width:${w - 20}%"></div>
+     </div>`).join('');
+  return `<div class="history-loading">${esc(text)}</div>${rows}`;
+}
+
+/**
+ * 拉取列表。
+ *
+ * 每次请求带一个自增序号，响应回来时序号变了就整包丢弃：
+ * 搜索框 250ms 防抖之后仍可能出现"先发的慢请求后到"，
+ * 那时用户已经改了条件，写回去会让列表和输入框对不上。
+ */
+async function loadHistory() {
+  if (!state.history.open) return;
+  const seq = ++state.history.seq;
+  const f = { ...state.history.filters };
+  const parts = histFilterParts();
+  const doing = parts.length
+    ? `正在按筛选条件查询（${parts.join('、')}）…`
+    : '正在读取验证码历史…';
+
+  state.history.loading = true;
+  renderHistoryStatus(doing);
+
+  const box = $('historyList');
+  box.innerHTML = `<div class="history-loading">${esc(doing)}</div>`;
+  const cancelSkeleton = showSkeletonLater(
+    box, histSkeletonHtml(doing), () => seq !== state.history.seq
+  );
+
+  const body = { limit: HIST_LIMIT };
+  const q = String(f.q || '').trim();
+  if (q) body.q = q;
+  if (f.accountId) body.accountId = f.accountId;
+  if (f.onlyUnused) body.onlyUnused = true;
+  if (f.sinceHours) body.sinceHours = Number(f.sinceHours);
+
+  try {
+    const d = await api('history.list', body);
+    if (seq !== state.history.seq || !state.history.open) return;
+    cancelSkeleton();
+    const items = Array.isArray(d && d.items) ? d.items : [];
+    state.history.items = items;
+    state.history.total = Number(d && d.total) || 0;
+    // 空态原因必须在这一层定：渲染时再判断就分不清"还没收到过"还是"筛没了"
+    state.history.emptyReason = items.length
+      ? ''
+      : (histHasFilters() ? 'filtered' : 'none');
+    // 状态行要在渲染前退出 loading，否则 renderHistoryStatus 会继续写"正在读取…"。
+    // seq 校验过才改：旧请求不能把新请求的 loading 抹掉。
+    state.history.loading = false;
+    renderHistory();
+  } catch (e) {
+    if (seq !== state.history.seq || !state.history.open) return;
+    cancelSkeleton();
+    state.history.loading = false;
+    state.history.items = [];
+    state.history.total = 0;
+    state.history.emptyReason = 'error';
+    renderHistoryError(e);
+    renderHistoryStatus('读取失败');
+    announce('读取验证码历史失败：' + ((e && e.message) || '未知错误'));
+  } finally {
+    if (seq === state.history.seq) {
+      state.history.loading = false;
+      updateHistSelectionUI();
+    }
+  }
+}
+
+/** 错误态：保留具体原因 + 重试按钮（重试走容器上的事件委托） */
+function renderHistoryError(err) {
+  // 只读 err.message：err.reason 是另一处在补的字段，历史页不依赖它，
+  // 万一它没跟上（或将来被移除），这里照样能显示服务端给的 error 文案。
+  $('historyList').innerHTML = errorStateHtml(
+    '读取验证码历史失败',
+    (err && err.message) || '未知错误',
+    'history'
+  );
+}
+
+/** 空态：说清楚为什么空，并给出下一步可点的动作 */
+function renderHistoryEmpty() {
+  const reason = state.history.emptyReason;
+  const parts = histFilterParts();
+  let title;
+  let desc;
+  let actions;
+  if (reason === 'filtered') {
+    title = '当前筛选没有匹配的记录';
+    desc = '筛选条件：' + parts.join('、') +
+      '。历史里可能确实没有这样的验证码，也可能是条件太严。';
+    actions = '<button class="btn btn-sm" type="button" data-hist-action="reset">清空筛选</button>' +
+      '<button class="btn btn-sm" type="button" data-hist-action="back">返回邮件</button>';
+  } else {
+    title = '还没有收到过验证码';
+    // 历史只由批量收码写入：单封收取不会进历史。这一点必须说清楚，
+    // 否则用户会以为自己的功能坏了。
+    desc = '识别到的验证码会在「批量收码」任务结束后自动存进这里，只保留最近 7 天。' +
+      '还没有记录，说明本机还没跑过批量收码，或者历史已经被清理。';
+    actions = '<button class="btn btn-sm" type="button" data-hist-action="back">返回邮件</button>' +
+      '<button class="btn btn-sm" type="button" data-hist-action="refresh">重新读取</button>';
+  }
+  $('historyList').innerHTML =
+    `<div class="state history-empty">
+       <div class="state-title">${esc(title)}</div>
+       <div class="state-desc">${esc(desc)}</div>
+       <div class="history-empty-actions">${actions}</div>
+     </div>`;
+}
+
+/**
+ * 渲染表格。
+ *
+ * 所有服务端字符串（accountEmail / code / senderDomain）必须过 esc()；
+ * 发件域走 domainHtml()（内部已转义并加粗后两级），和结果板保持同一套
+ * 防钓鱼展示。绝不把任何值直接拼进 innerHTML。
+ */
+function renderHistory() {
+  renderHistoryStatus();
+  const h = state.history;
+  if (!h.items.length) {
+    renderHistoryEmpty();
+    updateHistSelectionUI();
+    return;
+  }
+
+  const rows = h.items.map(it => {
+    const id = String(it.id || '');
+    const email = String(it.accountEmail || '');
+    const code = String(it.code || '');
+    const dom = String(it.senderDomain || '');
+    const used = !!it.usedAt;
+    const usedTitle = used ? '已用于 ' + fmtHistTime(it.usedAt) : '未标记为已用';
+    return `<tr class="hist-row${used ? ' used' : ''}" data-hist-id="${esc(id)}">
+      <td class="hist-col-check">
+        <input type="checkbox" class="hist-check" data-hist-check="${esc(id)}"
+               aria-label="选择 ${esc(email)} 的验证码 ${esc(code)}">
+      </td>
+      <td class="hist-col-email">${esc(email)}</td>
+      <td class="hist-col-code">
+        <code class="hist-code">${esc(code)}</code>
+        <button class="hist-copy" type="button" data-hist-copy="${esc(id)}"
+                aria-label="复制 ${esc(email)} 的验证码 ${esc(code)}">复制</button>
+      </td>
+      <td class="hist-col-domain">${dom ? domainHtml(dom) : esc(UNKNOWN_SENDER)}</td>
+      <td class="hist-col-time">
+        <time datetime="${esc(it.receivedAt || '')}">${esc(fmtHistTime(it.receivedAt) || '（未知时间）')}</time>
+      </td>
+      <td class="hist-col-state">
+        <span class="hist-badge ${used ? 'used' : 'unused'}" title="${esc(usedTitle)}">${used ? '已用' : '未用'}</span>
+      </td>
+      <td class="hist-col-ops">
+        <button class="hist-mark" type="button" data-hist-mark="${esc(id)}"
+                data-hist-used="${used ? '0' : '1'}"
+                aria-label="把 ${esc(email)} 的验证码 ${esc(code)} 标记为${used ? '未用' : '已用'}">${used ? '标为未用' : '标为已用'}</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  $('historyList').innerHTML =
+    `<table class="hist-table" aria-label="验证码历史记录">
+       <thead>
+         <tr>
+           <th scope="col" class="hist-col-check"><span class="visually-hidden">选择</span></th>
+           <th scope="col" class="hist-col-email">邮箱</th>
+           <th scope="col" class="hist-col-code">验证码</th>
+           <th scope="col" class="hist-col-domain">发件域</th>
+           <th scope="col" class="hist-col-time">收到时间</th>
+           <th scope="col" class="hist-col-state">状态</th>
+           <th scope="col" class="hist-col-ops">操作</th>
+         </tr>
+       </thead>
+       <tbody>${rows}</tbody>
+     </table>`;
+
+  bindHistoryRows();
+  updateHistSelectionUI();
+}
+
+/**
+ * 行内事件用闭包冻结 id / code / email，而不是点击时从 dataset 回读。
+ * 理由和结果板一样：重绘、以后可能的增量追加，都可能让 DOM 与数据错位；
+ * 冻结之后"点哪行就是哪行"是结构上保证的。
+ */
+function bindHistoryRows() {
+  const items = state.history.items;
+  const trs = $('historyList').querySelectorAll('.hist-row');
+  trs.forEach((tr, i) => {
+    const it = items[i];
+    if (!it) return;
+    const id = String(it.id || '');
+    const code = String(it.code || '');
+    const email = String(it.accountEmail || '');
+
+    const copyBtn = tr.querySelector('.hist-copy');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', async ev => {
+        ev.stopPropagation();
+        const ok = await copyWithToast(code, `${email} 的 ${code}`);
+        if (ok) {
+          flashCopied(copyBtn);
+          announce(`已复制 ${email} 的验证码 ${code}`);
+        }
+      });
+    }
+
+    const markBtn = tr.querySelector('.hist-mark');
+    if (markBtn) {
+      markBtn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        const used = markBtn.getAttribute('data-hist-used') === '1';
+        markHistory([id], used);
+      });
+    }
+
+    const check = tr.querySelector('.hist-check');
+    if (check) {
+      check.addEventListener('change', () => {
+        if (check.checked) state.history.selected.add(id);
+        else state.history.selected.delete(id);
+        updateHistSelectionUI();
+      });
+    }
+  });
+}
+
+/**
+ * 选中集合只存在 state.history.selected（渲染是全量重绘的，不能只信 DOM）。
+ * 每页最多 200 行，全部渲染成复选框，不做虚拟滚动。
+ */
+function updateHistSelectionUI() {
+  const h = state.history;
+  const ids = h.items.map(it => String(it.id || ''));
+  // 清掉已经不存在的 id：刷新后消失的行不该继续算进"已选"
+  for (const id of [...h.selected]) if (!ids.includes(id)) h.selected.delete(id);
+  const n = h.selected.size;
+
+  const count = $('histSelCount');
+  if (count) count.textContent = `已选 ${n} 条`;
+
+  const all = $('histSelectAll');
+  if (all) {
+    all.checked = ids.length > 0 && n === ids.length;
+    all.indeterminate = n > 0 && n < ids.length;
+    all.disabled = ids.length === 0 || h.loading;
+  }
+
+  const busy = h.loading || h.writing;
+  for (const id of ['btnHistMarkUsed', 'btnHistMarkUnused', 'btnHistCopySel']) {
+    const b = $(id);
+    if (b) b.disabled = busy || n === 0;
+  }
+
+  // 行高亮跟着选中走：只靠复选框，长表格里一眼看不出哪几行被选
+  const list = $('historyList');
+  if (list) {
+    list.querySelectorAll('.hist-row').forEach(tr => {
+      const on = h.selected.has(String(tr.getAttribute('data-hist-id') || ''));
+      tr.classList.toggle('sel', on);
+      const cb = tr.querySelector('.hist-check');
+      if (cb && cb.checked !== on) cb.checked = on;
+    });
+  }
+}
+
+/** 标记若干条（单条也走这里，传一个元素的数组） */
+async function markHistory(ids, used) {
+  const h = state.history;
+  if (h.writing || h.loading) return;
+  const list = (Array.isArray(ids) ? ids : []).filter(x => typeof x === 'string' && x).slice(0, 500);
+  if (!list.length) return;
+  const verb = used ? '已用' : '未用';
+  h.writing = true;
+  updateHistSelectionUI();
+  renderHistoryStatus(`正在把 ${list.length} 条标记为${verb}…`);
+  announce(`正在标记 ${list.length} 条为${verb}`);
+  try {
+    const d = await api('history.mark', { ids: list, used });
+    const n = Number(d && d.updated) || 0;
+    // updated 是"真正发生变化的条数"：重复标记同一条返回 0，
+    // 这不是失败，必须用不同的话说清楚，否则用户以为没生效。
+    const msg = n > 0
+      ? `已把 ${n} 条标记为${verb}`
+      : `这 ${list.length} 条已经是${verb === '已用' ? '已用' : '未用'}状态`;
+    toast(msg, n > 0 ? 'ok' : 'warn');
+    announce(msg);
+    list.forEach(id => h.selected.delete(id));
+    await reloadHistory();
+  } catch (e) {
+    const msg = '标记失败：' + ((e && e.message) || '未知错误');
+    toast(msg, 'err');
+    announce(msg);
+    renderHistoryStatus();
+  } finally {
+    h.writing = false;
+    updateHistSelectionUI();
+  }
+}
+
+/** 重新拉取并尽量保住滚动位置（标记/清理后调用，避免用户被弹回顶部） */
+async function reloadHistory() {
+  const wrap = $('historyListWrap');
+  const keep = wrap ? wrap.scrollTop : 0;
+  await loadHistory();
+  if (wrap) wrap.scrollTop = keep;
+}
+
+/** 复制选中行的验证码（每行一个，去重后按列表顺序） */
+async function copySelectedHistoryCodes() {
+  const h = state.history;
+  const picked = h.items.filter(it => h.selected.has(String(it.id || '')));
+  if (!picked.length) { toast('请先选择记录', 'warn'); return; }
+  const codes = [];
+  const seen = new Set();
+  for (const it of picked) {
+    const c = String(it.code || '');
+    if (c && !seen.has(c)) { seen.add(c); codes.push(c); }
+  }
+  if (!codes.length) { toast('选中的记录没有验证码', 'warn'); return; }
+  const ok = await copyText(codes.join('\n'));
+  if (ok) {
+    const extra = codes.length < picked.length ? `（${picked.length - codes.length} 条重复，已去重）` : '';
+    const msg = `已复制 ${codes.length} 个验证码${extra}`;
+    toast(msg);
+    announce(msg);
+  } else {
+    toast('复制失败，请手动选择文本', 'err');
+    announce('复制选中验证码失败');
+  }
+}
+
+/** 下载兜底：剪贴板两条路都失败时，至少把文本交给用户 */
+function downloadHistoryText(text, format, count) {
+  // CSV 加 UTF-8 BOM，Excel 双击打开才不乱码；TXT 不加（多数编辑器会把 BOM 显示成怪字符）。
+  // BOM 只能有一个：服务端将来若自己也带，先剥掉再统一补。
+  const body = String(text || '').replace(/^\uFEFF+/, '');
+  const bom = format === 'csv' ? '\uFEFF' : '';
+  const type = format === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8';
+  const blob = new Blob([bom + body], { type });
+  const url = URL.createObjectURL(blob);
+  const d0 = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = `${d0.getFullYear()}${pad(d0.getMonth() + 1)}${pad(d0.getDate())}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `验证码历史-${count}条-${stamp}.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+/**
+ * 导出（history.export）。
+ * 后端返回的是一段文本，不写文件、不自己下载 —— 前端复制到剪贴板，
+ * 复用 copyText()：它内部已有 execCommand 降级，两条路都失败才返回 false。
+ * 失败时退成下载文件，而不是只弹一句"复制失败"把 500 行数据留在内存里。
+ *
+ * 注意：**导出的是全部历史，不受当前筛选影响**（后端契约如此），
+ * 所以按钮文案写「导出全部」，避免用户以为导的是筛出来的那一页。
+ */
+async function exportHistory(format) {
+  const fmt = format === 'csv' ? 'csv' : 'txt';
+  const btn = fmt === 'csv' ? $('btnHistExportCsv') : $('btnHistExportTxt');
+  const oldText = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = '导出中…'; }
+  renderHistoryStatus('正在生成' + fmt.toUpperCase() + '导出文本…');
+  try {
+    const d = await api('history.export', { format: fmt });
+    const text = String(d && d.text != null ? d.text : '');
+    const n = Number(d && d.count) || 0;
+    if (!n && !text) {
+      toast('没有可导出的历史记录', 'warn');
+      announce('没有可导出的历史记录');
+      return;
+    }
+    const ok = await copyText(text);
+    if (ok) {
+      const msg = `已复制 ${n} 条全部历史（${fmt.toUpperCase()}）到剪贴板`;
+      toast(msg);
+      announce(msg);
+    } else {
+      downloadHistoryText(text, fmt, n);
+      const msg = `复制失败，已改为下载 ${fmt.toUpperCase()} 文件（共 ${n} 条）`;
+      toast(msg, 'warn');
+      announce(msg);
+    }
+  } catch (e) {
+    const msg = '导出失败：' + ((e && e.message) || '未知错误');
+    toast(msg, 'err');
+    announce(msg);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+    renderHistoryStatus();
+  }
+}
+
+/** 清理弹窗：先选范围，再走通用确认（危险操作不能一点就删） */
+function openHistClear() {
+  const err = $('histClearErr');
+  if (err) err.textContent = '';
+  openModal('modalHistClear');
+}
+
+async function doHistClear() {
+  const scopeEl = $('histClearScope');
+  const raw = scopeEl ? String(scopeEl.value || '') : '';
+  const hours = raw ? Number(raw) : null;
+  const label = hours
+    ? (hours === 24 ? '早于 24 小时' : hours === 72 ? '早于 3 天'
+      : hours === 168 ? '早于 7 天' : `早于 ${hours} 小时`)
+    : '全部历史';
+  const ok = await askConfirm({
+    title: '确认清理验证码历史',
+    message: `将清理${label}的记录。\n\n清理不可恢复，且不受当前筛选条件影响。`,
+    okText: '清理',
+    danger: true,
+  });
+  if (!ok) return;
+
+  const btn = $('btnHistClearOk');
+  const errEl = $('histClearErr');
+  if (errEl) errEl.textContent = '';
+  if (btn) { btn.disabled = true; btn.textContent = '清理中…'; }
+  try {
+    const body = hours ? { olderThanHours: hours } : {};
+    const d = await api('history.clear', body);
+    const n = Number(d && d.removed) || 0;
+    closeModal('modalHistClear');
+    const msg = n > 0 ? `已清理 ${n} 条验证码历史` : '没有符合条件的历史记录可清理';
+    toast(msg, n > 0 ? 'ok' : 'warn');
+    announce(msg);
+    if (state.history.open) await reloadHistory();
+  } catch (e) {
+    const msg = (e && e.message) || '清理失败';
+    // 错误留在弹窗里：这是用户在弹窗里发起的操作，关掉弹窗他就看不到原因了
+    if (errEl) errEl.textContent = msg;
+    toast('清理失败：' + msg, 'err');
+    announce('清理失败：' + msg);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '清理'; }
+  }
+}
+
+/** 清空筛选：三个控件和 state 一起复位，然后重新请求 */
+function resetHistFilters() {
+  state.history.filters = { q: '', accountId: '', onlyUnused: false, sinceHours: '' };
+  if ($('histQ')) $('histQ').value = '';
+  if ($('histOnlyUnused')) $('histOnlyUnused').checked = false;
+  if ($('histSince')) $('histSince').value = '';
+  renderHistoryAccountFilter();
+  loadHistory();
+}
+
+/** 筛选变化后统一从这里走：保持"变化即请求" */
+function applyHistFilters() {
+  loadHistory();
+}
+
+
 function renderMessages() {
   const box = $('msgList');
   if (!state.currentId) {
@@ -1434,6 +2099,9 @@ async function loadAccounts() {
   renderAccounts();
   // 列表刷新可能带来服务端归一化后的平台（自定义名大小写等），详情区要跟着重画
   renderPlatformEditor();
+  // 历史页的账户筛选也来自这份列表：账户改名/删除后下拉必须跟上，
+  // 否则会出现"筛选项指向一个已经不存在的 id、列表永远为空"。
+  if (state.history.open) renderHistoryAccountFilter();
 }
 
 async function loadMessages() {
@@ -1469,7 +2137,7 @@ async function loadMessages() {
     state.messages = [];
     // 结构化错误态 + 重试按钮。用户不必再跑到工具栏去点"刷新"，
     // 也不必猜"是不是我点错了"——原因和出路都在原地。
-    box.innerHTML = errorStateHtml('加载失败', e.message, 'messages');
+    box.innerHTML = errorStateHtml('加载失败', errText(e), 'messages');
   }
 }
 
@@ -2035,7 +2703,7 @@ function renderJobError(reason) {
  */
 function scanFailed(err) {
   stopScanPolling();
-  const msg = err && err.message ? err.message : '未知错误';
+  const msg = errText(err);
   settleProgressFill();
   $('scanProgress').hidden = false;
   $('btnScanCancel').hidden = true;
@@ -2204,7 +2872,7 @@ async function startCodeScan() {
     btn.disabled = false;
     $('btnScanCancel').disabled = false;
     $('btnScanCancel').textContent = '取消';
-    toast('启动批量收码失败：' + e.message, 'err');
+    toast('启动批量收码失败：' + errText(e), 'err');
   }
 }
 
@@ -2523,6 +3191,9 @@ function applyCurrentStatus(acc) {
 async function selectAccount(nextId) {
   if (!nextId) return;
   if (nextId === state.currentId) return;   // 点自己不用重发两条连接
+  // 历史页开着时点侧栏账户：用户想看的是这个账户的邮件。不先退出历史视图，
+  // 邮件会加载到一块 hidden 的区域里，界面毫无反应，看起来像点击失效。
+  if (state.history.open) hideHistoryView();
 
   state.currentId = nextId;
   state.currentMailbox = 'INBOX';
@@ -2699,7 +3370,7 @@ async function openMessage(uid) {
   } catch (err) {
     cancelSkeleton();
     if (seq !== state.openSeq) return;
-    viewBox.innerHTML = errorStateHtml('打开邮件失败', err.message, 'detail');
+    viewBox.innerHTML = errorStateHtml('打开邮件失败', errText(err), 'detail');
     // 详情加载失败时把那封邮件的"当前打开"状态也撤掉：
     // 否则列表里标着"正在看这封"，右边却是一块错误提示。
     state.openUid = null;
@@ -2743,7 +3414,7 @@ function bind() {
       // 新增账户会改变各平台的计数（默认没有任何平台，但"未标注 (N)"的 N 变了）
       loadPlatformStats();
       toast('账户已添加');
-    } catch (e) { err.textContent = e.message; }
+    } catch (e) { err.textContent = errText(e); }
   };
 
   // 批量导入
@@ -2769,7 +3440,7 @@ function bind() {
       if (d.skippedCount) msg += `，跳过 ${d.skippedCount} 个重复`;
       if (d.invalidCount) msg += `，${d.invalidCount} 行格式有误`;
       toast(msg);
-    } catch (e) { err.textContent = e.message; }
+    } catch (e) { err.textContent = errText(e); }
   };
 
   // 全部检测：100 个账号、并发 5、单账号约 2 秒 → 40-80 秒。
@@ -2856,6 +3527,72 @@ function bind() {
       btn.textContent = '全部检测';
     }
   };
+
+  /* ---- 验证码历史 ---- */
+  // 入口/返回：视图互斥，按钮的 aria-pressed 跟着切
+  $('btnHistory').onclick = () => {
+    if (state.history.open) hideHistoryView();
+    else showHistoryView();
+  };
+  $('btnHistoryBack').onclick = hideHistoryView;
+
+  // 搜索：与侧栏账户搜索同一套 250ms 防抖。历史是 HTTP 请求（要读盘解密），
+  // 逐字符发请求会在输入 "outlook" 时连发 7 次、每次解密整个历史文件。
+  // state 先记下值，保证防抖窗口内点到"清空筛选"等操作读到的是最新输入。
+  $('histQ').addEventListener('input', e => {
+    const v = e.target.value;
+    state.history.filters.q = v;
+    clearTimeout(histSearchTimer);
+    histSearchTimer = setTimeout(applyHistFilters, 250);
+  });
+
+  $('histAccount').addEventListener('change', e => {
+    state.history.filters.accountId = e.target.value;
+    applyHistFilters();
+  });
+  $('histSince').addEventListener('change', e => {
+    state.history.filters.sinceHours = e.target.value;
+    applyHistFilters();
+  });
+  $('histOnlyUnused').addEventListener('change', e => {
+    state.history.filters.onlyUnused = e.target.checked;
+    applyHistFilters();
+  });
+  $('btnHistReset').addEventListener('click', resetHistFilters);
+  $('btnHistRefresh').addEventListener('click', () => reloadHistory());
+
+  // 全选本页：只影响当前这一页（≤200 条），不会去选服务端还没返回的记录
+  $('histSelectAll').addEventListener('change', e => {
+    const on = e.target.checked;
+    state.history.selected.clear();
+    if (on) state.history.items.forEach(it => state.history.selected.add(String(it.id || '')));
+    renderHistory();
+  });
+
+  $('btnHistMarkUsed').addEventListener('click', () => markHistory([...state.history.selected], true));
+  $('btnHistMarkUnused').addEventListener('click', () => markHistory([...state.history.selected], false));
+  $('btnHistCopySel').addEventListener('click', copySelectedHistoryCodes);
+
+  $('btnHistExportTxt').addEventListener('click', () => exportHistory('txt'));
+  $('btnHistExportCsv').addEventListener('click', () => exportHistory('csv'));
+  $('btnHistClear').addEventListener('click', openHistClear);
+  $('btnHistClearOk').addEventListener('click', doHistClear);
+
+  // 列表容器上的委托：只处理"整块重绘后依然要活着"的按钮（空态/错误态里的动作）。
+  // 行内的复制/标记/勾选用 bindHistoryRows 逐行绑定闭包（见那里的注释）。
+  $('historyList').addEventListener('click', e => {
+    const retry = e.target.closest('[data-retry]');
+    if (retry) {
+      if (retry.dataset.retry === 'history') loadHistory();
+      return;
+    }
+    const act = e.target.closest('[data-hist-action]');
+    if (!act) return;
+    const a = act.dataset.histAction;
+    if (a === 'reset') resetHistFilters();
+    else if (a === 'back') hideHistoryView();
+    else if (a === 'refresh') loadHistory();
+  });
 
   // 筛选
   //
@@ -3032,7 +3769,7 @@ function bind() {
       const cur = state.accounts.find(a => a.id === idAtStart);
       if (cur && cur.status !== 'ok') await loadAccounts();
     } catch (err) {
-      toast('刷新失败：' + err.message, 'err');
+      toast('刷新失败：' + errText(err), 'err');
     } finally {
       btn.classList.remove('busy');
       btn.disabled = false;
@@ -3102,7 +3839,7 @@ function bind() {
       renderCodePanel(d.codes);
       if (!d.codes.length) toast('最近邮件里没找到验证码', 'warn');
     } catch (e) {
-      toast(e.message, 'err');
+      toast(errText(e), 'err');
     } finally {
       // try/finally 保证计时器一定被清掉：请求抛错时若漏了 clearInterval，
       // 按钮会永远停在"正在解析验证码（41.2s）"
@@ -3153,7 +3890,7 @@ function bind() {
       await api('send', { id: state.currentId, to, subject, text });
       closeModal('modalCompose');
       toast('邮件已发送');
-    } catch (e) { err.textContent = e.message; }
+    } catch (e) { err.textContent = errText(e); }
     finally { btn.disabled = false; btn.textContent = '发送'; }
   };
 

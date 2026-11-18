@@ -595,7 +595,9 @@ function accountPublic(a) {  const s = a.secrets || {};
     hasRefreshToken: !!s.refreshToken,
     clientIdHint: s.clientId ? s.clientId.slice(0, 8) + '…' : '',
     status: a.status || 'unknown',
-    statusMessage: a.statusMessage || '',
+    // statusMessage 是**落库**的字段：老版本曾把底层 e.message 原样写进去
+    // （含本地路径）。只在写入点脱敏挡不住库里已有的记录，所以出口也过一遍。
+    statusMessage: redactErrorText(a.statusMessage || '', 120),
     lastCheckedAt: a.lastCheckedAt || null,
     createdAt: a.createdAt || null,
     note: a.note || '',
@@ -621,6 +623,9 @@ const SCAN_MAX_IDS = 300;
 const SCAN_MAX_RESULTS = 800;
 const SCAN_MAX_CODES = 20;
 const SCAN_TEXT_LIMIT = 200;
+// 单账号扫描超时。jobs 的硬时限要按它推导（见 jobs.runningHardLimitMs），
+// 所以必须只有一个定义处——否则改这里的值，硬限还按旧值算。
+const SCAN_ACCOUNT_TIMEOUT_MS = 25000;
 // 退出时等令牌落盘的上限。单个账号超时 25 秒，但真正危险的只有
 // 「已拿到新令牌、还没写盘」那一小段，15 秒足够覆盖并发 3 的收尾。
 const DRAIN_TIMEOUT_MS = 15000;
@@ -809,6 +814,40 @@ function scanResultView(r) {
   };
 }
 
+/**
+ * account.check / account.checkAll 的响应边界。
+ *
+ * 为什么必须单独做：mail.checkAccount 在失败分支里把底层 `e.message` 原样
+ * 放进 result.error（见 lib/mail.js 的 catch），而这条 message 可能正是
+ * REFRESH_TOKEN_PERSIST_FAILED —— 里面拼了写盘异常的原文，含本地绝对路径。
+ * 它随后又被写进 statusMessage 存库、再经 accountPublic 回到前端。
+ * 这两条路径此前都没过 redactErrorText，是 scanResultForResponse 之外的漏网。
+ */
+function checkResultForResponse(r) {
+  if (!r || typeof r !== 'object') return r;
+  const out = { ...r };
+  // 只在字段本来就有时替换：成功结果没有 error/reason，凭空加键会改变响应形状
+  if (out.error != null) out.error = redactErrorText(out.error);
+  if (out.reason != null) out.reason = redactErrorText(out.reason);
+  return out;
+}
+
+/** statusMessage 会落库并长期显示，同样要脱敏；长度沿用 120 的老上限 */
+function checkStatusMessage(r) {
+  return redactErrorText((r && (r.reason || r.error)) || '检测失败', 120);
+}
+
+/**
+ * 最坏耗时的粗估：队列长度 × 单账号超时 / 并发。
+ * 只用于"创建任务时告知用户大概要多久"，不是承诺——真实耗时取决于网络。
+ * 单独抽出来是为了让它和 jobs.runningHardLimitMs 用同一组输入，
+ * 两边算法一旦分叉，用户看到的 ETA 就会和实际的硬限对不上。
+ */
+function scanWorstCaseMs(total) {
+  const n = Math.max(0, parseInt(total, 10) || 0);
+  return Math.ceil(n / SCAN_CONCURRENCY) * SCAN_ACCOUNT_TIMEOUT_MS;
+}
+
 function scanJobView(j) {
   const start = Date.parse(j.startedAt) || Date.now();
   const end = j.state === 'running' ? Date.now() : (Date.parse(j.finishedAt || '') || Date.now());
@@ -841,6 +880,9 @@ function scanJobView(j) {
     currentFound: Number.isInteger(j.currentFound) ? j.currentFound : 0,
     elapsedMs,
     etaMs,
+    // 这次任务实际用的硬限。前端据此显示"最迟 X 分钟会被兜底终止"，
+    // 不再依赖任何写死的 15 分钟文案（那个值已经不存在了）。
+    hardLimitMs: jobs.jobHardLimitMs(j),
     results: j.results.map(scanResultForResponse),
     errors: j.errors.map(scanErrorForResponse),
     // 硬时限 / 退出时的说明文案（前端此前完全看不到）
@@ -1709,12 +1751,12 @@ async function handleApi(req, res, url, origin) {
         // refresh_token 覆盖回旧值（续命失败，账号当场报废）。
         const meta = {
           status: r.ok ? 'ok' : (r.reason && r.reason.includes('封禁') ? 'banned' : 'failed'),
-          statusMessage: r.ok ? `可用，收件箱 ${r.exists} 封` : (r.reason || r.error),
+          statusMessage: r.ok ? `可用，收件箱 ${r.exists} 封` : checkStatusMessage(r),
           lastCheckedAt: new Date().toISOString(),
         };
         vault.updateMeta(acc.id, meta);
         Object.assign(acc, meta);
-        return json(res, 200, { ok: true, result: r, account: accountPublic(acc) }, origin);
+        return json(res, 200, { ok: true, result: checkResultForResponse(r), account: accountPublic(acc) }, origin);
       }
 
       /* ---- 批量检查 ---- */
@@ -1751,7 +1793,7 @@ async function handleApi(req, res, url, origin) {
           const acc = r.acc;
           const meta = {
             status: r.ok ? 'ok' : (r.reason && r.reason.includes('封禁') ? 'banned' : 'failed'),
-            statusMessage: r.ok ? `可用，收件箱 ${r.exists} 封` : (r.reason || r.error),
+            statusMessage: r.ok ? `可用，收件箱 ${r.exists} 封` : checkStatusMessage(r),
             lastCheckedAt: new Date().toISOString(),
           };
           Object.assign(acc, meta);
@@ -1764,7 +1806,7 @@ async function handleApi(req, res, url, origin) {
 
         return json(res, 200, {
           ok: true,
-          results: results.map(({ acc, ...rest }) => rest),
+          results: results.map(({ acc, ...rest }) => checkResultForResponse(rest)),
           total: results.length,
         }, origin);
       }
@@ -1910,7 +1952,11 @@ async function handleApi(req, res, url, origin) {
               ok: false,
               aadsts: e.aadsts || '',
               code: e.oauthError || e.code || '',
-              message: String(e.message).slice(0, 260),
+              // 端点诊断的整个价值就在于把微软的原文摆给用户看，所以这里
+              // 不像其他路径那样换固定文案；但**必须**过脱敏：
+              // REFRESH_TOKEN_PERSIST_FAILED 的 message 里拼了写盘异常原文，
+              // 含本地绝对路径；token 兑换失败的 message 里还可能带令牌片段。
+              message: redactErrorText(e.message, 260),
             });
             // 写盘失败与端点无关：再试下一个端点只会把新令牌也一起烧掉。
             // 立刻停手，把"凭据已轮换但没保存"这个事实如实报给用户。
@@ -1970,7 +2016,14 @@ async function handleApi(req, res, url, origin) {
         // 起第二个任务会用 6+ 并发撞微软限流，账号可能被标记。
         const running = jobs.findRunning('codes.scan');
         if (running) {
-          return json(res, 200, { ok: true, jobId: running.id, total: running.total, reused: true }, origin);
+          return json(res, 200, {
+            ok: true,
+            jobId: running.id,
+            total: running.total,
+            reused: true,
+            // 跟随已有任务时把它的硬限也带上：前端不重新计算，避免两边算法分叉
+            hardLimitMs: jobs.jobHardLimitMs(running),
+          }, origin);
         }
 
         // 一次性快照：全程不再调 vault.find（它每次都全库 AES 解密）
@@ -1988,9 +2041,23 @@ async function handleApi(req, res, url, origin) {
         }
 
         const items = list.map(a => ({ id: a.id, email: String(a.email || '').slice(0, 200) }));
-        const job = jobs.createJob('codes.scan', items.length);
-        startScanJob(job, byId, items, { mailbox, perAccount, onlyUnread, timeoutMs: 25000 });
-        return json(res, 200, { ok: true, jobId: job.id, total: job.total }, origin);
+        // 硬时限按任务规模推导（300 个账号的队列最坏要 42 分钟，写死 15 分钟
+        // 必然误杀）。参数从上面这几个常量算，不另设一份数字。
+        const job = jobs.createJob('codes.scan', items.length, {
+          perAccountMs: SCAN_ACCOUNT_TIMEOUT_MS,
+          concurrency: SCAN_CONCURRENCY,
+        });
+        startScanJob(job, byId, items, { mailbox, perAccount, onlyUnread, timeoutMs: SCAN_ACCOUNT_TIMEOUT_MS });
+        // hardLimitMs / etaWorstMs：让前端（和 README 的使用者）能事先看到
+        // "这活最坏要多久、什么时候会被兜底终止"。以前这两个数只存在于
+        // 服务端注释里，用户选满 300 个账号时对 15 分钟截断毫无预期。
+        return json(res, 200, {
+          ok: true,
+          jobId: job.id,
+          total: job.total,
+          hardLimitMs: jobs.jobHardLimitMs(job),
+          etaWorstMs: scanWorstCaseMs(job.total),
+        }, origin);
       }
 
       /* ---- 批量收验证码：进度 ---- */

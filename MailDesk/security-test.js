@@ -792,6 +792,128 @@ function rawReq(port, line) {
     assert.ok(!r.json.warn, '正常库不应出现 warn，实际：' + JSON.stringify(r.json.warn));
   });
 
+  /* ============================================================
+   * 响应脱敏的一致性（回归）
+   *
+   * 批量收码那条路径有 scanResultForResponse / scanErrorForResponse 两个
+   * 边界函数，把 error 和 reason 都过了 redactErrorText。但"别的响应路径
+   * 有没有漏网"一直没有人验过 —— 这类问题的特点是静态读代码看着都对，
+   * 只有真的让底层抛一个带路径/令牌的异常才能看出来。
+   *
+   * 下面这几条都走真实 HTTP，并且**故意注入**一个真实形状的底层错误：
+   * lib/mail.js 的 catch 会把 e.message 原样放进 result.error
+   * （REFRESH_TOKEN_PERSIST_FAILED 的 message 里就拼了写盘异常原文）。
+   * 断言的是"响应里既没有绝对路径也没有令牌片段"，而不是"代码里有某个函数名"。
+   * ============================================================ */
+
+  // server.js 与这里 require 的是同一个模块实例（同一个绝对路径），
+  // 所以改导出对象上的属性就能影响真实请求路径。
+  const mailMod = require('./lib/mail');
+  // 真实形状：ENOENT + 本地绝对路径 + M.C 开头的 refresh_token 片段 + GUID 形状的 client_id
+  const LEAKY = new Error(
+    'ENOENT: no such file, open \'D:\\Projects\\maildesk-keysdesk\\MailDesk\\data\\accounts.enc.tmp\'' +
+    ' token=M.C' + 'Ab3+/xYz'.repeat(6) +
+    ' client=3f2504e0-4f89-11d3-9a0c-0305e82c3301'
+  );
+  LEAKY.code = 'REFRESH_TOKEN_PERSIST_FAILED';
+  const assertRedacted = (text, label) => {
+    const s = String(text == null ? '' : text);
+    // 只断言"绝对路径"被剥掉。redactPaths 的设计是**保留可读的文件名**
+    // （见它的注释），所以 data\accounts.enc.tmp 这种相对残留是预期的，
+    // 泄露风险在于盘符绝对路径 / UNC / 家目录，那些必须没有。
+    assert.ok(!/[A-Za-z]:[\\/]/.test(s), label + ' 泄露了绝对路径：' + s);
+    assert.ok(!/\\\\[^\s"'`)<>,;]+/.test(s), label + ' 泄露了 UNC 路径：' + s);
+    assert.ok(!/\/(?:home|Users|root|tmp|var)\//.test(s), label + ' 泄露了 POSIX 绝对路径：' + s);
+    assert.ok(!/M\.C[A-Za-z0-9+/=._~-]{16,}/.test(s), label + ' 泄露了 refresh_token 片段：' + s);
+    assert.ok(!/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i.test(s), label + ' 泄露了 GUID：' + s);
+    // 脱敏必须真的发生了（不是靠把整段丢空来"通过"）
+    assert.ok(/<本地路径>|<令牌已隐藏>|<标识已隐藏>/.test(s),
+      label + ' 应留下脱敏占位符，否则用户看不到任何原因：' + s);
+  };
+
+  await t('account.check 的 result.error / reason 走脱敏边界', async () => {
+    const id = await mkAccount();
+    const orig = mailMod.checkAccount;
+    mailMod.checkAccount = async () => ({
+      ok: false, tokenOk: false, imapOk: false,
+      error: LEAKY.message,
+      reason: 'refresh_token 已轮换，但写回本地账户库失败（' + LEAKY.message + '）',
+      ms: 1,
+    });
+    try {
+      const r = await post('account.check', { id });
+      assert.strictEqual(r.status, 200, r.raw);
+      assertRedacted(r.json.result.error, 'account.check.result.error');
+      assertRedacted(r.json.result.reason, 'account.check.result.reason');
+    } finally {
+      mailMod.checkAccount = orig;
+    }
+  });
+
+  await t('account.check 落库的 statusMessage 也是脱敏的（会长期显示）', async () => {
+    const id = await mkAccount();
+    const orig = mailMod.checkAccount;
+    mailMod.checkAccount = async () => ({
+      ok: false, tokenOk: false, imapOk: false,
+      error: LEAKY.message, reason: LEAKY.message, ms: 1,
+    });
+    try {
+      const r = await post('account.check', { id });
+      assertRedacted(r.json.account.statusMessage, 'account.check.account.statusMessage');
+      // 不只是响应：库里的值也不能带路径，否则下次读列表还会漏出来
+      const onDisk = openVault().find(id);
+      assertRedacted(onDisk.statusMessage, '落库的 statusMessage');
+    } finally {
+      mailMod.checkAccount = orig;
+    }
+  });
+
+  await t('account.checkAll 的 results[] 同样脱敏', async () => {
+    const id = await mkAccount();
+    const orig = mailMod.checkAccount;
+    mailMod.checkAccount = async () => ({
+      ok: false, tokenOk: false, imapOk: false,
+      error: LEAKY.message, reason: LEAKY.message, ms: 1,
+    });
+    try {
+      const r = await post('account.checkAll', { ids: [id] });
+      assert.strictEqual(r.status, 200, r.raw);
+      const row = r.json.results.find(x => x.id === id);
+      assert.ok(row, '应返回该账户的检测结果');
+      assertRedacted(row.error, 'account.checkAll.results[].error');
+    } finally {
+      mailMod.checkAccount = orig;
+    }
+  });
+
+  // 老版本曾把底层 e.message 直接写进 statusMessage 落库。只在写入点脱敏
+  // 挡不住库里已经存在的记录，所以出口（accountPublic）也必须过一遍。
+  await t('库里已存在的未脱敏 statusMessage 在出口被脱敏', async () => {
+    const id = await mkAccount();
+    openVault().updateMeta(id, { statusMessage: LEAKY.message.slice(0, 120) });
+    const stored = openVault().find(id).statusMessage;
+    assert.ok(/accounts\.enc\.tmp/.test(stored), '前置：库里应确实存着未脱敏的旧值');
+    const a = await accById(id);
+    assertRedacted(a.statusMessage, 'accounts[].statusMessage');
+  });
+
+  await t('account.diagnose 的 tries[].message 走脱敏边界', async () => {
+    const id = await mkAccount();
+    const orig = mailMod.refreshAccountToken;
+    mailMod.refreshAccountToken = async () => { throw LEAKY; };
+    try {
+      const r = await post('account.diagnose', { id });
+      assert.strictEqual(r.status, 200, r.raw);
+      assert.ok(r.json.tries.length > 0, '应至少尝试一个端点');
+      for (const t of r.json.tries) {
+        if (t.ok) continue;
+        assertRedacted(t.message, 'account.diagnose.tries[' + t.endpoint + '].message');
+      }
+    } finally {
+      mailMod.refreshAccountToken = orig;
+    }
+  });
+
   console.log(`\n${'='.repeat(50)}`);
   console.log(`结果： ${pass} 通过， ${fail} 失败`);
   if (failures.length) {

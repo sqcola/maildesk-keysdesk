@@ -5,7 +5,7 @@
  */
 const assert = require('assert');
 
-let pass = 0, fail = 0;
+let pass = 0, fail = 0, skipped = 0;
 function t(name, fn) {
   // 同步 harness 收到 async 回调时，fn() 返回的是一个 Promise——
   // 里面的断言失败会变成 unhandled rejection，而这里照样打 ✓。
@@ -22,6 +22,19 @@ function t(name, fn) {
 async function tAsync(name, fn) {
   try { await fn(); console.log('  ✓ ' + name); pass++; }
   catch (e) { console.log('  ✗ ' + name + '\n      ' + e.message); fail++; }
+}
+
+/**
+ * 显式跳过的用例。
+ *
+ * 为什么需要它：ACL 断言只能在 Windows + NTFS 上做，CI 里多半取不到。
+ * 如果这类用例什么都不打印就返回，输出里的 "✓" 会让人以为 ACL 真的被验证过；
+ * 如果不加区分地算进 fail，非 Windows 机器上永远是红的。两种都不行，
+ * 所以单独计数并**打印原因**。它不计入 fail，因此不会让退出码变红。
+ */
+function tSkip(name, reason) {
+  console.log('  ⊘ ' + name + '\n      （跳过：' + reason + '）');
+  skipped++;
 }
 
 console.log('\n=== 1. 模块加载 ===');
@@ -915,6 +928,63 @@ function fakeExchange(state) {
     jobs.finishJob(j);
   });
 
+  // 回归：硬限曾经写死 15 分钟，而正常流程下 300 账号 / 25 秒超时 / 并发 3
+  // 的队列最坏就要 42 分钟 —— 选满账号必然被截断，而且是「正常流程」被截断。
+  // 这里直接测推导函数，不去等真定时器：断言的是"最坏情况也在硬限之内"。
+  const SCAN_N = 300, SCAN_TIMEOUT = 25000, SCAN_LANES = 3;
+  t('硬限推导：300 账号的大任务最坏耗时也在硬限之内', () => {
+    const worst = Math.ceil(SCAN_N / SCAN_LANES) * SCAN_TIMEOUT;   // 42 分钟
+    const limit = jobs.runningHardLimitMs(SCAN_N, SCAN_TIMEOUT, SCAN_LANES);
+    assert.ok(limit > worst,
+      '硬限 ' + jobs.hardLimitText(limit) + ' 必须大于最坏耗时 ' + jobs.hardLimitText(worst));
+    // 且必须留出余量（建连、令牌写盘都在 25 秒之外），不能刚好等于
+    assert.ok(limit - worst >= jobs.HARD_LIMIT_MARGIN_MIN_MS,
+      '余量只有 ' + (limit - worst) + 'ms，不足以覆盖收尾开销');
+  });
+
+  t('硬限推导：小任务有下限，不会被算成几分钟就杀', () => {
+    // 1 个账号 25 秒：纯按规模算只有 31 分钟以下，但必须有下限兜住
+    const one = jobs.runningHardLimitMs(1, 25000, 3);
+    assert.strictEqual(one, jobs.RUNNING_HARD_LIMIT_MIN_MS,
+      '单账号任务应落到下限，实际 ' + one);
+    // 0 个账号（空库点了批量）也不许算出 0 或负数
+    assert.strictEqual(jobs.runningHardLimitMs(0, 25000, 3), jobs.RUNNING_HARD_LIMIT_MIN_MS);
+  });
+
+  t('硬限推导：被恶意构造的超大 total 不会撑成无限期占用', () => {
+    // 单例锁唯一的兜底释放路径就是硬限，所以必须有上限
+    const huge = jobs.runningHardLimitMs(1e9, 25000, 1);
+    assert.strictEqual(huge, jobs.RUNNING_HARD_LIMIT_MAX_MS,
+      '超大任务应钳到上限，实际 ' + huge);
+    // 非法参数不能算出 NaN / Infinity（那样 setTimeout 会立刻触发或永不触发）
+    for (const bad of [NaN, -1, null, undefined, 'x', Infinity]) {
+      const v = jobs.runningHardLimitMs(300, bad, bad);
+      assert.ok(Number.isFinite(v) && v >= jobs.RUNNING_HARD_LIMIT_MIN_MS && v <= jobs.RUNNING_HARD_LIMIT_MAX_MS,
+        '参数 ' + String(bad) + ' 算出了 ' + v);
+    }
+  });
+
+  t('硬限记在 job 上，且随 total 收缩不变（不会因跳过已删账户而提前杀）', () => {
+    const j = jobs.createJob('limit-selftest', 300, { perAccountMs: 25000, concurrency: 3 });
+    const limit = jobs.jobHardLimitMs(j);
+    assert.ok(limit > Math.ceil(300 / 3) * 25000, '300 账号的 job 硬限应大于最坏耗时');
+    // 扫到一半有账户被删：total 会缩小，但硬限不能跟着变小
+    j.total = 10;
+    assert.strictEqual(jobs.jobHardLimitMs(j), limit, '硬限不应随 total 收缩而改变');
+    j.state = 'done';
+    jobs.finishJob(j);
+  });
+
+  t('expireRunning 的文案用这个 job 自己的硬限，不再写死 15 分钟', () => {
+    const j = jobs.createJob('limit-text', 300, { perAccountMs: 25000, concurrency: 3 });
+    jobs.expireRunning(j);
+    const expected = jobs.hardLimitText(jobs.runningHardLimitMs(300, 25000, 3));
+    assert.ok(j.error.includes(expected), '文案里的分钟数应为 ' + expected + '，实际：' + j.error);
+    assert.ok(!/15 分钟/.test(j.error), '不应再出现写死的 15 分钟：' + j.error);
+    j.state = 'failed';
+    jobs.finishJob(j);
+  });
+
   t('幂等锁：running 时 findRunning 能拿到', () => {
     const j = jobs.createJob('lock-selftest', 3);
     const found = jobs.findRunning('lock-selftest');
@@ -1031,6 +1101,30 @@ function fakeExchange(state) {
     // 选中账户后、以及刷新成功后，若本地状态不是 ok 就 loadAccounts()
     const hits = (src.match(/status !== 'ok'[\s\S]{0,120}loadAccounts\(\)/g) || []).length;
     assert.ok(hits >= 2, '选中账户与刷新成功后都应重拉列表，实际匹配 ' + hits + ' 处');
+  });
+
+  // 回归：服务端错误响应同时带 error（细节）和 reason（归类），两个都脱敏过。
+  // 前端此前只读 error，reason 算完就被丢掉 —— 于是 500 类错误只剩下
+  // "服务器内部错误"，而"网络超时 / 令牌失效"这类归类就在响应里没人展示。
+  t('前端 api() 会读出 err.reason 并传给展示层', () => {
+    const src = fs.readFileSync(path.join(__dirname, 'public', 'app.js'), 'utf8');
+    const i = src.indexOf('async function api(');
+    assert.ok(i > 0, '应能定位 api()');
+    const block = src.slice(i, src.indexOf('\nfunction ', i + 10));
+    assert.ok(/err\.reason\s*=\s*data && data\.reason != null/.test(block),
+      'api() 必须把 data.reason 挂到 err 上，否则服务端算好的归类白算');
+    // 不许改写 message：批量收码轮询等分支按 message 文本判断
+    assert.ok(!/err\.message\s*=/.test(block), 'api() 不得改写 err.message 的语义');
+
+    // errText 是唯一把 reason 融进展示文案的地方：有内容且与 message
+    // 不同才追加，避免出现"超时（超时）"这种重复。
+    const e = src.indexOf('function errText(');
+    assert.ok(e > 0, '应有 errText 展示辅助函数');
+    const helper = src.slice(e, src.indexOf('\nfunction ', e + 10));
+    assert.ok(/reason === msg/.test(helper), 'reason 与 message 相同时不应重复追加');
+    // 展示层真的用上了它（绝不是定义了却没人调）
+    const uses = (src.match(/errText\(/g) || []).length;
+    assert.ok(uses >= 6, 'errText 应被多处展示路径使用，实际只有 ' + (uses - 1) + ' 处');
   });
 
   console.log('\n=== 13. 验证码历史 ===');
@@ -1985,9 +2079,177 @@ function fakeExchange(state) {
     assert.ok(/Date\.now\(\)/.test(m[0]), 'tmp 名必须含时间戳，实际：' + m[0]);
   });
 
+  /* ==================================================================
+   * 18. ACL 在每次 save 后必须仍是收紧态（回归）
+   *
+   * 修的是这个 bug：首次建库后 accounts.enc 是 `<user>:(F)`，但**再存一次**
+   * 就退回父目录的继承态（实测出现 CodexSandboxUsers/SYSTEM/Administrators
+   * 的 (I) 条目），本机其他账户又能读走全部 refresh_token 密文。
+   *
+   * 根因：NTFS 的 rename 保留被移动文件自己的 ACL，不是被覆盖目标的 ACL。
+   * 旧流程 write tmp → rename → 之后才（或才不）收紧主文件，于是每一轮
+   * rename 都用一份继承态的新 tmp 把上一轮收紧的结果覆盖掉。
+   *
+   * 这些断言读的是**真实 ACL 文本**（execFileSync('icacls')），不是源码里
+   * 有没有出现过 "tightenAcl" 字样 —— 后者在 bug 存在时同样是绿的，是假测试。
+   * ================================================================== */
+  console.log('\n=== 18. ACL 在每次 save 后仍是收紧态 ===');
+
+  const { execFileSync } = require('child_process');
+
+  /**
+   * 读出文件的实际 ACL 文本。
+   *
+   * 返回数组，每个元素是 icacls 输出里含 `:(` 的那一行（即一条 ACE）。
+   * 非 Windows 返回 null，调用方据此跳过。
+   *
+   * **不吞异常**：取不到 ACL 时把原因交给调用方显式跳过，而不是返回空数组
+   * 让 `!(I)` 断言恒真 —— 那种"静默通过"正是这个 bug 能藏这么久的原因。
+   */
+  function readAcl(file) {
+    if (process.platform !== 'win32') return null;
+    const out = execFileSync('icacls', [file], { encoding: 'utf8', windowsHide: true });
+    // icacls 每行形如 `<path> <DOMAIN>\<user>:(F)` 或后续行的 `  <SID>:(I)(M)`。
+    // 只看含 `:(` 的片段，路径前缀和末尾的本地化"已处理 1 个文件"提示都不参与判断。
+    return out.split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l.includes(':('));
+  }
+
+  /** 目录里所有形如 <basename>.tmp* 的残留文件 */
+  function tmpLeftovers(dir, basename) {
+    const re = new RegExp('^' + basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\.tmp');
+    return fs.readdirSync(dir).filter(f => re.test(f));
+  }
+
+  /** 一条能通过 History 白名单的最小记录 */
+  const histItem = i => ({
+    accountId: 'acl' + i, accountEmail: 'acl' + i + '@outlook.com', code: '10000' + i,
+    senderDomain: 'example.com', receivedAt: '2026-11-04T10:00:0' + i + '.000Z',
+    usedAt: null, confidence: 100, uid: i,
+  });
+
+  const aclDir = fs.mkdtempSync(path.join(os.tmpdir(), 'maildesk-acl-test-'));
+  try {
+    const { Vault: VaultAcl } = require('./lib/vault');
+    const { History: HistoryAcl } = require('./lib/history');
+    const vault = new VaultAcl(aclDir);
+    const accFile = path.join(aclDir, 'accounts.enc');
+    const histFile = path.join(aclDir, 'history.enc');
+
+    // --- 18.1 accounts.enc：连续两次 save 后不含继承标记 ---
+    // 一次 save 可能碰巧还留着首次收紧的结果，必须**两次**才能暴露
+    // 「每轮 rename 覆盖成继承态」这个问题。断言用 >=2 次，与实际复现一致。
+    vault.save([{ id: 'acl1', email: 'acl1@outlook.com', secrets: { refreshToken: 'RT-ACL-1' } }]);
+    vault.save([
+      { id: 'acl1', email: 'acl1@outlook.com', secrets: { refreshToken: 'RT-ACL-1' } },
+      { id: 'acl2', email: 'acl2@outlook.com', secrets: { refreshToken: 'RT-ACL-2' } },
+    ]);
+
+    let accAcl = null;
+    let aclSkipReason = '';
+    try { accAcl = readAcl(accFile); } catch (e) { aclSkipReason = 'icacls 读不到 ACL：' + e.message; }
+
+    if (process.platform !== 'win32') {
+      tSkip('accounts.enc 连续两次 save 后 ACL 不含继承标记 (I)', '非 Windows 平台，无 NTFS ACL');
+    } else if (accAcl === null) {
+      tSkip('accounts.enc 连续两次 save 后 ACL 不含继承标记 (I)', aclSkipReason);
+    } else {
+      t('accounts.enc 连续两次 save 后 ACL 不含继承标记 (I)', () => {
+        assert.ok(accAcl.length > 0, 'ACL 解析结果为空，说明 readAcl 没读到任何 ACE');
+        const inherited = accAcl.filter(l => l.includes('(I)'));
+        assert.strictEqual(inherited.length, 0,
+          'save 之后仍带继承 ACE（本机其他账户可读），实际 ACL：\n        ' + accAcl.join('\n        '));
+      });
+    }
+
+    // --- 18.2 accounts.enc：save 后目录里没有 tmp 残留 ---
+    // 平台无关，每个平台都跑。
+    t('save() 之后数据目录没有 accounts.enc.tmp* 残留', () => {
+      const left = tmpLeftovers(aclDir, 'accounts.enc');
+      assert.strictEqual(left.length, 0, '残留：' + left.join(', '));
+      assert.ok(fs.existsSync(accFile), '前置：accounts.enc 应存在（否则这条测的是空目录）');
+    });
+
+    // --- 18.3 history.enc：写入两次后不含继承标记 ---
+    const hist = new HistoryAcl(vault, histFile);
+    hist.upsertMany([histItem(1)]);
+    hist.upsertMany([histItem(2)]);
+
+    let histAcl = null;
+    let histSkipReason = '';
+    try { histAcl = readAcl(histFile); } catch (e) { histSkipReason = 'icacls 读不到 ACL：' + e.message; }
+
+    if (process.platform !== 'win32') {
+      tSkip('history.enc 写入两次后 ACL 不含继承标记 (I)', '非 Windows 平台，无 NTFS ACL');
+    } else if (histAcl === null) {
+      tSkip('history.enc 写入两次后 ACL 不含继承标记 (I)', histSkipReason);
+    } else {
+      t('history.enc 写入两次后 ACL 不含继承标记 (I)', () => {
+        assert.ok(histAcl.length > 0, 'ACL 解析结果为空，说明 readAcl 没读到任何 ACE');
+        const inherited = histAcl.filter(l => l.includes('(I)'));
+        assert.strictEqual(inherited.length, 0,
+          'history.enc 仍带继承 ACE（里面有邮箱与验证码），实际 ACL：\n        ' + histAcl.join('\n        '));
+      });
+    }
+
+    // --- 18.4 history.enc：无 tmp 残留（所有平台） ---
+    t('history 写入之后数据目录没有 history.enc.tmp* 残留', () => {
+      const left = tmpLeftovers(aclDir, 'history.enc');
+      assert.strictEqual(left.length, 0, '残留：' + left.join(', '));
+      assert.ok(fs.existsSync(histFile), '前置：history.enc 应存在');
+    });
+
+    // --- 18.5 tmp 名唯一性（所有平台） ---
+    // 固定名 .tmp 在两个实例并发写时会互相截断，最终把主文件撕成解不开的密文。
+    // 这条用源码 + 实际行为双重确认：源码里历史 tmp 名必须含 pid 与时间戳。
+    t('history 的 tmp 名含 pid 与时间戳（防跨进程互相撕碎）', () => {
+      const src = fs.readFileSync(path.join(__dirname, 'lib', 'history.js'), 'utf8');
+      const m = src.match(/const tmp = this\.filePath \+ '\.tmp[^;]*;/);
+      assert.ok(m, '找不到 history._write() 里的 tmp 名');
+      assert.ok(/process\.pid/.test(m[0]), 'tmp 名必须含 process.pid，实际：' + m[0]);
+      assert.ok(/Date\.now\(\)/.test(m[0]), 'tmp 名必须含时间戳，实际：' + m[0]);
+      // 顺带确认没有退回固定名（固定名 = 上面两个断言都过不了，但这条更直白）
+      assert.ok(!/const tmp = this\.filePath \+ '\.tmp';/.test(src),
+        'tmp 名不能是固定的 .tmp');
+    });
+
+    // --- 18.6 收紧发生在 rename 之前（顺序断言） ---
+    // 这一条必须做**源码顺序**断言：ACL 只在 rename 之前收紧才有效，
+    // 反过来写（rename 后收紧主文件）在「只 save 一次」时同样能通过上面的
+    // 用例，却在第二次 save 时退回去 —— 正是这个 bug 的形状。
+    t('save() 在 rename 之前收紧 tmp 的 ACL', () => {
+      const src = fs.readFileSync(path.join(__dirname, 'lib', 'vault.js'), 'utf8');
+      const body = src.slice(src.indexOf('save(accounts) {'));
+      const iAcl = body.indexOf('tightenAcl(tmp)');
+      const iRename = body.indexOf('fs.renameSync(tmp, this.storePath)');
+      assert.ok(iAcl >= 0, 'save() 里找不到 tightenAcl(tmp)');
+      assert.ok(iRename >= 0, 'save() 里找不到 renameSync');
+      assert.ok(iAcl < iRename,
+        'tightenAcl(tmp) 必须排在 rename 之前，实际位置 acl=' + iAcl + ' rename=' + iRename);
+      // 旧写法（只在新建时对主文件收紧）必须彻底消失：它和上面那条同时存在时，
+      // 会让人误以为两条路径都覆盖到了。
+      assert.ok(!/if \(!existedBefore\)\s*tightenAcl/.test(src),
+        '不得保留 "if (!existedBefore) tightenAcl(...)" 的旧逻辑');
+    });
+
+    t('history._write() 在 rename 之前收紧 tmp 的 ACL', () => {
+      const src = fs.readFileSync(path.join(__dirname, 'lib', 'history.js'), 'utf8');
+      const body = src.slice(src.indexOf('_write(items) {'));
+      const iAcl = body.indexOf('tightenAcl(tmp)');
+      const iRename = body.indexOf('fs.renameSync(tmp, this.filePath)');
+      assert.ok(iAcl >= 0, 'history._write() 里找不到 tightenAcl(tmp)');
+      assert.ok(iRename >= 0, 'history._write() 里找不到 renameSync');
+      assert.ok(iAcl < iRename,
+        'tightenAcl(tmp) 必须排在 rename 之前，实际位置 acl=' + iAcl + ' rename=' + iRename);
+    });
+  } finally {
+    fs.rmSync(aclDir, { recursive: true, force: true });
+  }
+
   console.log('');
   console.log('----------------------------------------');
-  console.log('  通过 ' + pass + '   失败 ' + fail);
+  console.log('  通过 ' + pass + '   失败 ' + fail + (skipped ? '   跳过 ' + skipped : ''));
   console.log('----------------------------------------');
   process.exit(fail ? 1 : 0);
 })();

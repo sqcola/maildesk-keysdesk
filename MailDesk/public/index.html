@@ -8,6 +8,12 @@
 </head>
 <body>
 
+<!-- 屏幕阅读器播报区：标记已用 / 清理 / 导出这类"没有页面结构变化"的操作，
+     视觉用户靠 toast，读屏用户只能靠这块 aria-live。放在 body 最前面，
+     保证任何视图切换都不会把它移出 DOM（aria-live 节点被移除后首播会丢）。
+     aria-atomic 让读屏器整段重读；app.js 的 announce() 负责写入。 -->
+<div id="srStatus" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+
 <div class="app">
 
   <!-- 侧栏 -->
@@ -37,6 +43,9 @@
       <button class="btn" id="btnImport">批量导入</button>
       <button class="btn" id="btnCheckAll">全部检测</button>
       <button class="btn" id="btnExportPlatforms">导出平台清单</button>
+      <!-- 验证码历史的入口。它不是弹窗而是独立视图（和邮件视图互斥），
+           用 aria-pressed 让读屏用户知道当前处于哪一页。 -->
+      <button class="btn" id="btnHistory" aria-pressed="false">验证码历史</button>
     </div>
 
     <div class="side-filter">
@@ -63,7 +72,7 @@
 
   <!-- 主区 -->
   <main class="main">
-    <div class="toolbar">
+    <div class="toolbar" id="mailToolbar">
       <div class="toolbar-left">
         <h2 id="currentEmail">选择一个账户</h2>
         <button class="btn btn-sm" id="btnCopyEmail" title="复制邮箱地址" disabled>复制</button>
@@ -107,7 +116,7 @@
       <div class="code-board-list" id="codeBoardList"></div>
     </section>
 
-    <div class="content">
+    <div class="content" id="mailContent">
       <div class="msg-list" id="msgList">
         <div class="placeholder">选择左侧账户查看邮件</div>
       </div>
@@ -115,6 +124,75 @@
         <div class="placeholder">选择一封邮件查看内容</div>
       </div>
     </div>
+
+    <!-- 验证码历史：独立视图，与 .content（邮件列表/正文）互斥。
+         不放进弹窗的原因：它是一块常驻的可筛选、可多选的数据表，
+         弹窗里既没法长久停留，也会被 Esc 一键关掉、丢掉筛选条件。
+
+         语义化表格：这是真正的二维数据（邮箱 / 码 / 发件域 / 时间 / 状态），
+         用 <table> + <th scope="col"> 读屏器才能把"这一格是什么"念出来。
+         tabindex="-1" 让 openHistoryView() 能把焦点移进来（键盘用户切页后
+         不会留在被隐藏的邮件区里）。 -->
+    <section class="history-view" id="historyView" hidden tabindex="-1"
+             role="region" aria-labelledby="historyTitle">
+      <div class="history-head">
+        <div class="history-head-title">
+          <h2 id="historyTitle">验证码历史</h2>
+          <!-- 汇总 + 当前正在做什么。没有 aria-live：读屏播报统一走 #srStatus，
+               两个 live 区域同时说话会互相打断。 -->
+          <span class="history-status" id="historyStatus"></span>
+        </div>
+        <button class="btn btn-sm" id="btnHistoryBack" type="button">← 返回邮件</button>
+      </div>
+
+      <div class="history-filters" role="search" aria-label="筛选验证码历史">
+        <label class="hist-field hist-field-q">
+          <span class="hist-field-label">搜索</span>
+          <input type="text" id="histQ" maxlength="100" autocomplete="off" spellcheck="false"
+                 placeholder="验证码、邮箱或发件域…">
+        </label>
+        <label class="hist-field">
+          <span class="hist-field-label">账户</span>
+          <select id="histAccount"><option value="">全部账户</option></select>
+        </label>
+        <label class="hist-field">
+          <span class="hist-field-label">时间范围</span>
+          <select id="histSince">
+            <option value="">全部时间</option>
+            <option value="1">最近 1 小时</option>
+            <option value="24">最近 24 小时</option>
+            <option value="72">最近 3 天</option>
+            <option value="168">最近 7 天</option>
+          </select>
+        </label>
+        <label class="chk hist-only-unused"><input type="checkbox" id="histOnlyUnused"> 只看未用</label>
+        <div class="history-filter-actions">
+          <button class="btn btn-sm" id="btnHistReset" type="button">清空筛选</button>
+          <button class="btn btn-sm" id="btnHistRefresh" type="button">刷新</button>
+        </div>
+      </div>
+
+      <div class="history-toolbar">
+        <div class="history-bulk">
+          <label class="chk"><input type="checkbox" id="histSelectAll"> 全选本页</label>
+          <span id="histSelCount">已选 0 条</span>
+          <button class="btn btn-sm" id="btnHistMarkUsed" type="button" disabled>标记已用</button>
+          <button class="btn btn-sm" id="btnHistMarkUnused" type="button" disabled>标记未用</button>
+          <button class="btn btn-sm" id="btnHistCopySel" type="button" disabled>复制选中验证码</button>
+        </div>
+        <div class="history-actions">
+          <button class="btn btn-sm" id="btnHistExportTxt" type="button"
+                  title="导出全部历史为 TXT（不受当前筛选影响，复制到剪贴板）">导出 TXT</button>
+          <button class="btn btn-sm" id="btnHistExportCsv" type="button"
+                  title="导出全部历史为 CSV（不受当前筛选影响，复制到剪贴板）">导出 CSV</button>
+          <button class="btn btn-sm btn-danger" id="btnHistClear" type="button">清理…</button>
+        </div>
+      </div>
+
+      <div class="history-list-wrap" id="historyListWrap">
+        <div class="history-list" id="historyList"></div>
+      </div>
+    </section>
   </main>
 </div>
 
@@ -245,6 +323,34 @@
     <div class="modal-foot">
       <button class="btn" data-close="modalPlatforms">取消</button>
       <button class="btn btn-primary" id="pfDone">完成</button>
+    </div>
+  </div>
+</div>
+
+<!-- 清理验证码历史弹窗。二次确认分两步：这个弹窗负责"清哪些"（时间范围），
+     点「清理」后再走通用确认弹窗确认数量——删除是单向的，不能一键就删。 -->
+<div class="modal" id="modalHistClear" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="histClearTitle">
+    <div class="modal-head">
+      <h3 id="histClearTitle">清理验证码历史</h3>
+      <button class="modal-close" data-close="modalHistClear" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <label for="histClearScope">清理范围</label>
+      <select id="histClearScope">
+        <option value="24">早于 24 小时</option>
+        <option value="72">早于 3 天</option>
+        <option value="168">早于 7 天</option>
+        <option value="">全部历史（清空）</option>
+      </select>
+      <div class="hint">
+        清理不可恢复。当前筛选条件不影响清理范围——清理作用于**全部**历史记录。
+      </div>
+      <div class="err" id="histClearErr"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="modalHistClear">取消</button>
+      <button class="btn btn-primary btn-danger" id="btnHistClearOk" type="button">清理</button>
     </div>
   </div>
 </div>

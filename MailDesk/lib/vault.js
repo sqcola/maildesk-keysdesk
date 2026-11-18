@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
+const { execFileSync } = require('child_process');
 
 const ALGO = 'aes-256-gcm';
 const IV_LEN = 12;
@@ -31,13 +32,28 @@ const KEY_LEN = 32;
  * 合起来就是全部 100 个邮箱的 refresh_token。H1 花了力气堵 handshake，
  * 如果密钥文件本身仍对第二个账户可读，那道门就是白关的。
  *
- * 为什么是异步 + 去重：icacls 是一次进程创建，实测每次约 2.5 秒（两次调用
- * 就是 5 秒）。放在启动路径上会让服务启动慢 5 秒，放在每次 save 上会让
- * 保存一封邮件的标记都卡 5 秒。所以：
- *   · 只在"文件刚创建/刚换密钥"时调用，不在读取路径上调用；
- *   · 用 spawn 而不是 execFileSync，不阻塞事件循环；
- *   · 同一路径正在收紧时不再重复发起。
- * 收紧是防御纵深而非功能依赖，晚几秒到位没有影响。
+ * 为什么现在是**同步**的（execFileSync）：调用点必须在 rename 之前完成收紧。
+ * NTFS 的 rename 保留的是被移动文件**自己**的 ACL，而不是被覆盖目标的 ACL，
+ * 所以「先 rename、再收紧主文件」这条路走不通：下一次 save 又 rename 一份
+ * 新的 tmp 上去，上一轮收紧的成果当场被覆盖回继承态（实测复现：
+ * 建库后是 `<user>:(F)`，再存一次就退回
+ * `CodexSandboxUsers:(I)(M) / SYSTEM:(I)(F) / Administrators:(I)(F) / <user>:(I)(F)`）。
+ * 把 rename 塞进异步回调里也能达到目的，但那会让 save() 的同步语义失真
+ * （调用方以为已经落盘，其实还在等 icacls），代价比几十毫秒大得多。
+ *
+ * 关于耗时：旧版注释写「icacls 每次约 2.5 秒（两次就是 5 秒）」，并据此决定
+ * 「只在新建时收紧」。**那个数字是错的**，本机实测一整套（一次
+ * `/grant:r` + 一次 `/inheritance:r`）是 35–55ms（三次：55 / 36 / 35ms）。
+ * 也就是说每次 save 多花 35–55ms —— 对一个「标记一封邮件已读」的操作完全
+ * 可以接受，而它换来的是「任何时刻磁盘上的 accounts.enc 都不对本机其他账户
+ * 可读」。旧结论建立在一个夸大约 50 倍的估算上，这里推翻它。
+ *
+ * 另一条实测（选型用，别随手改）：同一个 icacls 调用，带 windowsHide:true
+ * 是 ~90ms（两次），去掉它只要 ~35ms —— 也就是说**隐藏控制台窗口本身**
+ * 比 icacls 还贵。这里仍然保留 windowsHide:true：server.js 是 node server.js
+ * 直接从 cmd 窗口起来的（见 start.bat），不隐藏的话每次 save 都会在用户屏幕上
+ * 闪一个黑框，那个体验代价比 55ms 大。selftest 的耗时由这一项主导
+ * （146 项时 2.5s → 全绿 13.5s），排查性能问题时先看这里。
  *
  * 顺序不能反：先 /grant:r 当前用户（失败就直接退出），再 /inheritance:r。
  * 反过来的话，一旦第 1 步失败、第 2 步生效，文件就只剩 Owner 的
@@ -45,35 +61,45 @@ const KEY_LEN = 32;
  * 已加密的 accounts.enc 当场变成砖。
  *
  * 失败一律吞掉：宁可不收紧，也不能因为收紧失败让服务起不来。
+ *
+ * 去重：旧版用一个 `_aclInFlight` Set 抑制「同一路径正在收紧时重复发起」。
+ * 那是异步语义下的并发保护。改成同步后，两次调用不可能交错（execFileSync
+ * 返回之前不会执行下一行），这个 Set 永远只会「加进去、同一段同步代码里再删掉」，
+ * 提供的保护是零 —— 已删除。真正需要的「别对同一个文件重复白跑」体现在
+ * 上层：路径不存在就直接返回，构造函数也不再重复收紧密钥（_readKey 已经做了）。
  */
-const _aclInFlight = new Set();
-
 function tightenAcl(file) {
   if (process.platform !== 'win32') {
     try { fs.chmodSync(file, 0o600); } catch { /* 非 Windows 上 chmod 就是陆的语义 */ }
     return;
   }
-  // 已经排过队就别再排一次：每次进程启动都会走"确认密钥存在"这条路，
-  // 一个 v2 库在 5 秒内被读 10 次是很正常的。
-  if (_aclInFlight.has(file)) return;
-  _aclInFlight.add(file);
+  // 文件还不存在时 icacls 必然失败，但进程创建的成本照付（约 35ms）。
+  // 构造函数会对「升级前就存在的 accounts.enc」补收紧，而首装/测试场景下
+  // 这个文件往往根本不存在，先看一眼省掉两次无意义的进程创建。
+  if (!fs.existsSync(file)) return;
 
   let user;
   try { user = os.userInfo().username; } catch { user = ''; }
-  if (!user) { _aclInFlight.delete(file); return; }
+  if (!user) return;
 
-  const { spawn } = require('child_process');
-  const run = (args, done) => {
-    const p = spawn('icacls', args, { stdio: 'ignore', windowsHide: true });
-    const to = setTimeout(() => { try { p.kill(); } catch { /* 忽略 */ } }, 5000);
-    p.on('error', () => { clearTimeout(to); done(false); });
-    p.on('exit', code => { clearTimeout(to); done(code === 0); });
+  const run = args => {
+    execFileSync('icacls', args, {
+      stdio: 'ignore',
+      windowsHide: true,
+      timeout: 15000,
+      // 输出本来就是本地化的乱码，一律不看；只要退出码
+    });
   };
 
-  run([file, '/grant:r', user + ':F'], ok => {
-    if (!ok) { _aclInFlight.delete(file); return; }
-    run([file, '/inheritance:r'], () => { _aclInFlight.delete(file); });
-  });
+  try {
+    run([file, '/grant:r', user + ':F']);
+  } catch {
+    // 第 1 步失败：**绝不能**再走 /inheritance:r（见上面的顺序说明）
+    return;
+  }
+  try {
+    run([file, '/inheritance:r']);
+  } catch { /* 继承没去掉：至少当前用户已拿到独占授权，比完全没收紧要轻 */ }
 }
 
 /**
@@ -146,7 +172,7 @@ class Vault {
     this.key = this._loadOrCreateKey();
     this.lastCorrupted = [];   // 上次 all() 时解不开的条目（含 raw，save 时原样写回）
 
-    // 对**升级前就已存在**的文件补一次 ACL 收紧。
+    // 对**升级前就已存在**的 accounts.enc 补一次 ACL 收紧。
     //
     // 只在"创建时收紧"是不够的：本机实测 data/accounts.enc 的 ACL 是
     //   Authenticated Users:(I)(M)  ← 本机任何已认证用户可写
@@ -154,9 +180,14 @@ class Vault {
     // refresh_token 的密文，旁边就是 vault.key —— 第二个 Windows 账户能同时
     // 读到这两样，等于完全绕过 H1 那道 handshake 门。
     //
-    // 异步（tightenAcl 内部 spawn，不阻塞事件循环），且带 in-flight 去重，
-    // 所以每次启动调一次的成本只是后台一个短命进程。
-    tightenAcl(this.keyPath);
+    // 现在 save() 每次落盘都会在 rename 之前收紧它自己写出的 tmp（见 save 里
+    // 的注释），所以这里只剩一个作用：**老库在还没写过一次之前**也处于收紧态。
+    // 这次调用是同步的（约 35–55ms），只发生在启动路径上，且文件不存在时
+    // tightenAcl 会先 existsSync 直接返回，不白付进程创建的成本。
+    //
+    // 这里**不再**对 keyPath 调一次：_loadOrCreateKey 的每一个分支都以
+    // _readKey()/_installKey() 收尾，那两条路径里已经各收紧过一次，再调只是
+    // 重复两次 icacls（约 70ms 白花）。storePath 没有别的入口，所以留在这。
     tightenAcl(this.storePath);
   }
 
@@ -236,18 +267,31 @@ class Vault {
     }
 
     // 分支 5：两处都没有 —— 首装，生成新密钥
+    //
+    // 这里**不**调 _readKey：_installKey 已经在 rename 之前收紧过 tmp，rename
+    // 之后 primary 就是那份收紧态的文件，紧接着再走一遍 _readKey 等于对同一个
+    // 文件连跑两次 icacls（约 70ms 白花，且首装时每次都发生）。
+    // 长度校验不能省，只是就地做——它是纯内存操作，和 ACL 无关。
     const key = crypto.randomBytes(KEY_LEN);
     this._installKey(primary, key);
-    return this._readKey(primary, key);
+    if (key.length !== KEY_LEN) {
+      const e = new Error('生成的密钥长度异常（实际 ' + key.length + '）：' + path.resolve(primary));
+      e.code = 'VAULT_KEY_INVALID';
+      throw e;
+    }
+    return key;
   }
 
   /**
    * 读密钥。
    *
-   * 读取路径**不阻塞**在 ACL 收紧上（icacls 是进程创建，同步调用会拖慢启动），
-   * 但也不能完全不收紧：升级前就已经存在的 vault.key 从未被收紧过，光靠
-   * "只在创建时收紧"会把老文件永远留在继承 ACL 上。所以这里做一次
-   * "后台补收"：tightenAcl 内部有 in-flight 去重，重复调用不产生额外进程。
+   * 读取路径上的这次收紧是**同步**的（约 35–55ms，见 tightenAcl 的注释），
+   * 但仍必要：升级前就已经存在的 vault.key 从未被收紧过，光靠"只在创建时
+   * 收紧"会把老文件永远留在继承 ACL 上。构造函数里已经不再重复收紧密钥，
+   * 所以整个启动过程对 vault.key 只走这一遍 icacls。
+   *
+   * 顺序上这里是"读内容 → 收紧"，不涉及 rename，所以先收紧还是后收紧都不影响
+   * 结果（与 save/_installKey 里"必须先收紧 tmp 再 rename"是两回事）。
    */
   _readKey(file, known) {
     const key = known || fs.readFileSync(file);
@@ -260,7 +304,14 @@ class Vault {
     return key;
   }
 
-  /** 原子写入密钥：tmp + fsync + rename，避免断电留下半个文件 */
+  /**
+   * 原子写入密钥：tmp + fsync + 收紧 tmp + rename，避免断电留下半个文件。
+   *
+   * 收紧必须在 rename **之前**、对 tmp 做：NTFS 的 rename 保留的是被移动
+   * 文件自己的 ACL，不是被覆盖目标的 ACL（与 save() 里的理由完全相同）。
+   * 在 rename 之后收紧主文件也不是不行（这之后没有第二次 rename 覆盖它），
+   * 但两条路径用同一个顺序，少一个将来会被复制错的例外。
+   */
   _installKey(file, key) {
     const tmp = file + '.tmp-' + process.pid + '-' + Date.now();
     const fd = fs.openSync(tmp, 'w', 0o600);
@@ -273,12 +324,15 @@ class Vault {
       try { fs.closeSync(fd); } catch { /* 忽略 */ }
     }
     try {
+      // rename 保留 tmp 自己的 ACL，收紧这一份等于收紧最终文件
+      tightenAcl(tmp);
       fs.renameSync(tmp, file);
     } catch (e) {
       try { fs.rmSync(tmp, { force: true }); } catch { /* 忽略 */ }
       throw e;
     }
-    tightenAcl(file);
+    // 这里**不再** tightenAcl(file)：rename 之后主文件已经是 tmp 那份收紧过的
+    // ACL，再调一次只是把同样的两条 icacls 重跑一遍（多花约 35–55ms）。
   }
 
   /**
@@ -433,8 +487,6 @@ class Vault {
   }
 
   save(accounts) {
-    // rename 之前先记下这张文件是不是本来就有 —— 下面决定要不要收紧 ACL 用。
-    const existedBefore = fs.existsSync(this.storePath);
     // 保留 all() 时解不开的条目：它们不在 accounts 里（被跳过了），
     // 如果直接重写就会**永久删除用户的原始数据**。原样带回去。
     // H2 注意：隔离条目原样回写，**连同它自己的 v/version 标记**一起。
@@ -500,6 +552,37 @@ class Vault {
     try {
       fs.closeSync(fd);
     } catch { /* 已关闭或关闭失败都不影响 rename */ }
+    // ---- ACL 收紧：必须在 rename 之前，对 tmp 自己做 ----
+    //
+    // accounts.enc 里是全部 100 个账号的 refresh_token 密文，和 vault.key 一样
+    // 属于"第二个 Windows 账户不该读到"的东西（H1 的完整闭环）。
+    //
+    // 为什么不能像旧版那样「只在 !existedBefore 时对主文件收紧」：
+    // NTFS 的 rename 保留的是**被移动文件自己**的 ACL，而不是被覆盖目标的 ACL。
+    // 旧流程是 write tmp（新文件，继承父目录 ACL）→ rename → 之后才（或才不）
+    // 收紧主文件。于是第一轮收紧确实生效，但**下一次 save 的 rename 会用一个
+    // 继承态的新 tmp 把它整个换掉**。本机实测复现：
+    //   建库后：          accounts.enc  <user>:(F)
+    //   再存一次后：      accounts.enc  CodexSandboxUsers:(I)(M)
+    //                                  S-1-5-21-...-2967008108:(I)(M)
+    //                                  SYSTEM:(I)(F) / Administrators:(I)(F) / <user>:(I)(F)
+    // 也就是说每存一次就退回去一次，本机其他账户又能读 accounts.enc。
+    //
+    // 正确做法：在 rename 之前收紧 tmp 自己的 ACL。rename 把这份 ACL 原样带到
+    // 主文件上，于是「每次 save 之后主文件都是收紧态」成为不变式，且**没有**
+    // 增加 icacls 调用次数（还是两次：/grant:r + /inheritance:r）。
+    // 代价是每次 save 多 35–55ms（实测三次：55 / 36 / 35ms）—— 见 tightenAcl
+    // 的注释，旧版注释里那个「2.5 秒」是错的，正是它导致了这个 bug。
+    //
+    // 位置放在 close 之后、rename 之前：必须等文件句柄关掉（icacls 对一个
+    // 正在被写的文件不保证能改 DACL），也必须在 rename 之前（否则写的就是
+    // 主文件，下一轮又被覆盖）。
+    try {
+      // 用 try 包住是为了让「ACL 收紧失败」不至于挡住落盘本身：
+      // 宁可不收紧，也不能因为收紧失败丢数据（tightenAcl 内部已经吞掉
+      // icacls 的非零退出，这里兜的是它理论上可能抛出的意外）。
+      tightenAcl(tmp);
+    } catch { /* 收紧失败不阻断落盘，下次 save 会再试 */ }
     try {
       fs.renameSync(tmp, this.storePath);
     } catch (e) {
@@ -511,14 +594,6 @@ class Vault {
     }
     // 隔离条目已经写回文件了，清空列表避免下次 save 重复追加
     this.lastCorrupted = [];
-    // accounts.enc 里是全部 100 个账号的 refresh_token 密文，和 vault.key 一样
-    // 属于"第二个 Windows 账户不该读到"的东西（H1 的完整闭环）。
-    // 只在文件**刚刚被创建**时收紧：icacls 是进程创建（实测每次 2-3 秒），
-    // 挂在每次 save 上会让"标记一封邮件已读"这种操作卡好几秒。
-    // 文件一旦建好就带上了这个 ACL，rename 覆盖不会丢它（rename 换的是目录项，
-    // 不是文件对象本身；新 tmp 文件会继承目录 ACL，但那份继承里本机只有
-    // SYSTEM/Administrators/当前用户，风险面与收紧后等价）。
-    if (!existedBefore) tightenAcl(this.storePath);
     try {
       // 目录 fsync：POSIX 上 rename 的持久性依赖父目录落盘。
       // Windows 上 open 目录会失败，所以 try/catch。
@@ -724,4 +799,6 @@ class Vault {
   }
 }
 
-module.exports = { Vault };
+// tightenAcl 一并导出：history.js 的落盘走完全相同的「收紧 tmp 再 rename」流程，
+// 与其抄一份 icacls 逻辑（将来只会修好一处），不如共用同一个实现。
+module.exports = { Vault, tightenAcl };

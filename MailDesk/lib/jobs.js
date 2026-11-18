@@ -30,10 +30,62 @@ const crypto = require('crypto');
 const MAX_JOBS = 5;
 // 已结束任务的保留时长（10 分钟）
 const TTL_MS = 10 * 60 * 1000;
-// 硬时限（15 分钟）：正常最多 300 账号 / 每账号 25 秒超时 / 并发 3
-// 约 42 分钟，因此这里会在最坏情况下提前终止，宁可让用户重跑也不能
-// 让一个卡死的 job 永久占住单例锁。
-const RUNNING_HARD_LIMIT_MS = 15 * 60 * 1000;
+
+/* ---------------- running 硬时限（按任务规模动态算） ----------------
+ *
+ * 硬时限的本意是「防止一个卡死的 job 永久占住单例锁」，而不是「限制用户
+ * 扫描多少账号」。以前它写死 15 分钟，而实际规模是：最多 300 个账号 /
+ * 每账号 25 秒超时 / 并发 3 —— 队列最坏 300/3×25s ≈ 42 分钟。
+ * 也就是说用户选满 300 个账号时，**正常流程**必然被 15 分钟截断：前面的
+ * 结果保留、后面的账号根本没扫，界面上只是多一行"硬时限已终止"。
+ * 反过来，只扫 1 个账号时 15 分钟又过于宽松——一个卡死的单账号任务要
+ * 白占单例锁 15 分钟。写死一个与规模无关的值，两头都错。
+ *
+ * 所以改成按 (队列长度 × 单账号超时 + 余量) 动态推导，并钳在
+ * [MIN, MAX] 之间：
+ *  - MIN：小任务也有兜底余量（建连、令牌落盘、onItem 回调都在超时之外）
+ *  - MAX：即使调用方传来一个被恶意构造的超大 total，也不会撑成"无限期
+ *    占用"。上限必须存在：expireRunning 是单例锁唯一的兜底释放路径。
+ *
+ * 余量按比例给（不够就补足 1 分钟）：真实耗时里还有每次账号切换的建连
+ * 开销与令牌写盘，纯按最坏值卡得太紧会在大任务末尾误杀。
+ */
+const RUNNING_HARD_LIMIT_MIN_MS = 10 * 60 * 1000;
+const RUNNING_HARD_LIMIT_MAX_MS = 60 * 60 * 1000;
+// 调用方没给单账号超时时的保守假设（与 bulk-scan 的 DEFAULT_TIMEOUT_MS 一致）
+const ASSUMED_PER_ACCOUNT_MS = 25 * 1000;
+// 余量取最坏值的 10%，至少 1 分钟：300 账号的最坏值 42 分钟 → 46 分钟硬限。
+// 这 4 分钟覆盖每个账号的建连开销、令牌轮换写盘和 onItem 回调，
+// 这些都在单账号 25 秒超时之外，纯按最坏值卡死会在任务末尾误杀。
+const HARD_LIMIT_MARGIN_RATIO = 0.1;
+const HARD_LIMIT_MARGIN_MIN_MS = 60 * 1000;
+
+/**
+ * 按任务规模推导 running 硬时限（纯函数，便于单测）。
+ *
+ * @param {number} total        账号总数
+ * @param {number} perAccountMs 单账号超时（ms），非法值退回 25 秒
+ * @param {number} concurrency  并发数，非法值按 1（= 最保守，上限最大）
+ * @returns {number} 毫秒，落在 [RUNNING_HARD_LIMIT_MIN_MS, RUNNING_HARD_LIMIT_MAX_MS]
+ */
+function runningHardLimitMs(total, perAccountMs, concurrency) {
+  const n = Math.max(0, parseInt(total, 10) || 0);
+  const rawPer = Number(perAccountMs);
+  const per = Number.isFinite(rawPer) && rawPer > 0 ? rawPer : ASSUMED_PER_ACCOUNT_MS;
+  // 并发取 1 是保守方向：算出来的上限更大，绝不会因为参数写错而提前误杀
+  const lanes = Math.max(1, parseInt(concurrency, 10) || 1);
+  const worst = Math.ceil(n / lanes) * per;
+  const margin = Math.max(HARD_LIMIT_MARGIN_MIN_MS, Math.ceil(worst * HARD_LIMIT_MARGIN_RATIO));
+  const wanted = worst + margin;
+  return Math.min(RUNNING_HARD_LIMIT_MAX_MS, Math.max(RUNNING_HARD_LIMIT_MIN_MS, wanted));
+}
+
+/** 硬限的展示文案（分钟；不足 1 分钟向上取整，避免显示成 0） */
+function hardLimitText(ms) {
+  const minutes = Math.max(1, Math.ceil(Number(ms) / 60000));
+  return minutes + ' 分钟';
+}
+
 const SAFE_JOB_ID = /^[a-z0-9-]{8,64}$/;
 
 const jobs = new Map(); // id -> job
@@ -177,13 +229,27 @@ function isSafeId(id) {
  * 正好把一次 refresh_token 轮换卡在内存里 → 账号永久失效。
  *
  * 真正收尾（state / finishedAt）交给 startScanJob 的 finally。
+ *
+ * 文案里的分钟数必须来自**这个 job 实际用的**硬限（job.hardLimitMs），
+ * 否则用户看到"超过 15 分钟"却明明才扫了几分钟，会以为程序坏了。
  */
 function expireRunning(j) {
   if (!j || j.state !== 'running') return;
   j.cancelRequested = true;
   j.draining = true;
   j.current = '';
-  j.error = '任务超过 15 分钟硬时限，已强制终止';
+  const limit = jobHardLimitMs(j);
+  j.error = '任务超过 ' + hardLimitText(limit) + '硬时限，已强制终止';
+}
+
+/**
+ * 某个 job 的硬限。job 上没记（旧对象 / 测试里手工构造）就按它的 total 现算，
+ * 绝不退回一个与规模无关的写死值。
+ */
+function jobHardLimitMs(j) {
+  const own = Number(j && j.hardLimitMs);
+  if (Number.isFinite(own) && own > 0) return own;
+  return runningHardLimitMs(j && j.total);
 }
 
 function prune() {
@@ -193,7 +259,7 @@ function prune() {
     if (j.state === 'running') {
       const st = Date.parse(j.startedAt) || 0;
       // 注意：绝不在这里 delete 一个 running job，只做超时标记
-      if (st && now - st > RUNNING_HARD_LIMIT_MS) expireRunning(j);
+      if (st && now - st > jobHardLimitMs(j)) expireRunning(j);
       continue;
     }
     const end = j.finishedAt ? Date.parse(j.finishedAt) : 0;
@@ -222,11 +288,18 @@ function prune() {
 
 /**
  * 新建任务。返回的是活引用，调用方直接读写，status 读到的就是最新状态。
+ *
+ * opts.perAccountMs / opts.concurrency：用于推导这次的硬时限（任务规模越大，
+ * 允许跑得越久）。不传就按默认的 25 秒 / 并发 1 保守估算——宁愿上限偏大，
+ * 也不要因为漏传参数把正常任务误杀。
+ *
  * @param {string} type
  * @param {number} total
+ * @param {{perAccountMs?:number, concurrency?:number}} [opts]
  */
-function createJob(type, total) {
+function createJob(type, total, opts = {}) {
   prune();
+  const o = (opts && typeof opts === 'object') ? opts : {};
   const job = {
     id: crypto.randomUUID(),          // 36 位小写十六进制 + 连字符，符合白名单
     type: String(type || 'job'),
@@ -242,6 +315,10 @@ function createJob(type, total) {
     results: [],
     errors: [],
     error: '',
+    // 这次的硬时限。记在 job 上而不是每次现算：prune() 用的是 total，
+    // 而 total 会随着"账户已被删除"逐条收缩，用收缩后的值去算会让硬限
+    // 在任务跑到一半时突然变小，提前把还在正常跑的 job 杀掉。
+    hardLimitMs: runningHardLimitMs(total, o.perAccountMs, o.concurrency),
     // draining：正在收尾（已请求取消，但仍有账号在飞 / 还在写账户库）
     // drained ：finally 已跑完、finishJob 已调用，结果不再变化
     draining: false,
@@ -253,7 +330,7 @@ function createJob(type, total) {
   const timer = setTimeout(() => {
     expireRunning(job);
     deadlineTimers.delete(job.id);
-  }, RUNNING_HARD_LIMIT_MS);
+  }, job.hardLimitMs);
   if (typeof timer.unref === 'function') timer.unref();
   deadlineTimers.set(job.id, timer);
   activeRuns.set(job.type, job);
@@ -349,5 +426,9 @@ module.exports = {
   // 在途事务计数 + 退出协调
   beginTransaction, endTransaction, drainTransactions, pendingTransactions,
   requestShutdown, isDraining, isShutdownRequested,
-  MAX_JOBS, TTL_MS, RUNNING_HARD_LIMIT_MS, SAFE_JOB_ID,
+  // 硬时限推导（纯函数，自检直接测它，不必等真定时器）
+  runningHardLimitMs, hardLimitText, jobHardLimitMs,
+  MAX_JOBS, TTL_MS, SAFE_JOB_ID,
+  RUNNING_HARD_LIMIT_MIN_MS, RUNNING_HARD_LIMIT_MAX_MS,
+  ASSUMED_PER_ACCOUNT_MS, HARD_LIMIT_MARGIN_RATIO, HARD_LIMIT_MARGIN_MIN_MS,
 };
