@@ -14,12 +14,13 @@
 
 ```bash
 cd MailDesk
-node selftest.js        # 146 项，功能正确性
-node security-test.js   # 55 项，安全性（起真实 HTTP 服务）
+node selftest.js              # 159 项，功能正确性
+node security-test.js         # 64 项，安全性（起真实 HTTP 服务）
+node tools/check-key-test.js  # 27 项，密钥体检工具
 
 cd ../KeyDesk
-node selftest.js        # 226 项
-node security-test.js   # 71 项
+node selftest.js        # 241 项
+node security-test.js   # 84 项
 ```
 
 **全部必须通过。** 如果某个测试失败了而你认为它写错了，请先说明为什么——不要为了让它变绿而删断言。

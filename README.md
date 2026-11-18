@@ -7,7 +7,7 @@
 ![Version](https://img.shields.io/badge/version-0.1.0--SNAPSHOT-orange?style=flat-square)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-blue?style=flat-square)
 ![No Cloud](https://img.shields.io/badge/cloud-not%20required-success?style=flat-square)
-![Tests](https://img.shields.io/badge/assertions-498%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/assertions-575%20passing-brightgreen?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-green?style=flat-square)
 
 **不需要云** · **不需要 npm install** · **数据不出本机**
@@ -163,23 +163,25 @@ Node.js 服务（零依赖）
 | 协议 | IMAP4rev1 + XOAUTH2、SMTP + STARTTLS |
 | TOTP | 自实现，通过 RFC 6238 全部 18 个官方向量 |
 | QR | 自实现，字节模式 v1-10 / ECC M / Reed-Solomon / 掩码惩罚 |
-| 测试 | 自制断言器，498 条 |
+| 测试 | 自制断言器，575 条 |
 
 <details>
-<summary><b>关键设计一：为什么 MailDesk 的握手要本机秘密</b></summary>
+<summary><b>关键设计一：为什么握手要本机秘密</b></summary>
 
 服务只监听 `127.0.0.1`，外部网络访问不到。但**本机上的其他程序、以及本机其他已登录的
 Windows 账户**可以直接连这个端口。只靠一个"所有接口都校验"的随机 token 挡不住它们——
-token 本来就是通过 `/api?action=handshake` 无条件下发的。
+token 如果无条件下发，那道门就等于没关。
 
-所以有三道：
+所以有三道（**MailDesk 与 KeyDesk 都是这三道**）：
 
-1. **握手需要本机秘密** —— 首次启动生成 `~/.maildesk/handshake`（256 位随机），
-   浏览器必须粘贴它才能换到会话 cookie。别的进程读不到这个文件，也过不了
-   `Sec-Fetch-Site: same-origin` 校验。cookie 存的是秘密的 HMAC 而不是秘密本身
-2. **密钥文件收紧 ACL** —— `vault.key` 和 `accounts.enc` 在启动时用 `icacls` 去掉继承、
-   只授权当前账户。否则第二个管理员账户能同时读到密钥和密文，完全绕过第 1 道
-3. **AAD 绑定账户 ID** —— 每条账号的密文都用 `maildesk/2|<accountId>` 做 AAD，
+1. **握手需要本机秘密** —— 首次启动生成 `~/.maildesk/handshake`
+   （KeyDesk 是 `~/.keydesk/handshake`，256 位随机），浏览器必须粘贴它才能换到会话
+   cookie。别的进程读不到这个文件，也过不了 `Sec-Fetch-Site: same-origin` 校验。
+   cookie 存的是秘密的 HMAC 而不是秘密本身
+2. **密钥文件收紧 ACL** —— `vault.key` / `accounts.enc` / `vault.enc` 每次写盘后都用
+   `icacls` 去掉继承、只授权当前账户。否则第二个管理员账户能同时读到密钥和密文，
+   完全绕过第 1 道
+3. **AAD 绑定账户 ID** —— MailDesk 每条账号的密文都用 `maildesk/2|<accountId>` 做 AAD，
    把密文从 A 账号搬到 B 账号的位置会认证失败
 
 </details>
@@ -221,7 +223,7 @@ token 本来就是通过 `/api?action=handshake` 无条件下发的。
 | MailDesk 安全：握手鉴权、ACL 收紧、AAD 绑定、实例锁 | ✅ 完成 |
 | KeyDesk 核心：TOTP / 恢复码代际 / 双槽解锁 | ✅ 完成 |
 | KeyDesk 安全：强制回填、加密导出、审计视图 | ✅ 完成 |
-| 测试套件：4 套共 498 条断言 | ✅ 全绿 |
+| 测试套件：5 套共 575 条断言 | ✅ 全绿 |
 | `1.0.0`（真实场景长期验证后转正） | ⬜ 待 0.1.x 收敛 |
 
 **质量基线**：`selftest` + `security-test` 四套全绿 · 邮件库 100 账号零损伤 ·
@@ -249,8 +251,8 @@ cd KeyDesk && node server.js
 - **贡献指南**：[`CONTRIBUTING.md`](CONTRIBUTING.md) —— 怎么报问题、怎么提 PR、代码风格与测试要求
 - **跑测试**：
   ```bash
-  cd MailDesk && node selftest.js && node security-test.js   # 146 + 55
-  cd ../KeyDesk && node selftest.js && node security-test.js  # 226 + 71
+  cd MailDesk && node selftest.js && node security-test.js && node tools/check-key-test.js  # 159 + 64 + 27
+  cd ../KeyDesk && node selftest.js && node security-test.js  # 241 + 84
   ```
 - **Issues 与 PR**：报 bug 请带上**出问题的那个工具的版本**、操作系统、Node 版本、复现步骤；
   想改代码请先开个 Issue 说一声，避免白写
