@@ -143,6 +143,70 @@ function rawReq(port, line) {
     assert.strictEqual(r.status, 401, '应为 401（缺授权），实际 ' + r.status);
   });
 
+  // 这一组是补上的：之前 handshake.bootstrap 在两个测试文件里出现 0 次，
+  // 意味着整个本机鉴权体系的入口从未被调用过。把 server.js:1264 的
+  // `if (!safeEqualStr(secret, HANDSHAKE_SECRET))` 改成 `if (false)`，
+  // 四套测试依然全绿——错误授权码能换到 token 也没人发现。
+  console.log('\n=== H1b: 本机授权引导（bootstrap）===');
+
+  // handshake 落在 KEY_DIR；KEY_DIR 没显式设置时会跟着 DATA_DIR 走
+  // （见 server.js 的 KEY_DIR 解析），所以两个都要看。
+  const KEY_DIR = process.env.MAILDESK_KEY_DIR || process.env.MAILDESK_DATA_DIR ||
+    path.join(require('os').homedir(), '.maildesk');
+  const HS_FILE = path.join(KEY_DIR, 'handshake');
+  let hsSecret = '';
+  try { hsSecret = fs.readFileSync(HS_FILE, 'utf8').trim(); } catch { /* 读不到就跳过依赖它的用例 */ }
+
+  const bootstrap = (secret, extraHeaders) => req(PORT, {
+    method: 'POST',
+    path: '/api?action=handshake.bootstrap',
+    headers: Object.assign(
+      { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
+      extraHeaders || {}
+    ),
+  }, JSON.stringify({ secret }));
+
+  await t('正确授权码换到 cookie，且 cookie 不是秘密原文', async () => {
+    if (!hsSecret) { console.log('      (跳过：读不到 handshake 文件)'); return; }
+    const r = await bootstrap(hsSecret);
+    assert.strictEqual(r.status, 200, '正确授权码应 200，实际 ' + r.status);
+    const sc = (r.headers['set-cookie'] || [])[0] || '';
+    assert.ok(sc, '应下发 cookie');
+    assert.ok(/HttpOnly/i.test(sc), 'cookie 必须是 HttpOnly');
+    assert.ok(/SameSite=Strict/i.test(sc), 'cookie 必须是 SameSite=Strict');
+    assert.ok(!sc.includes(hsSecret), 'cookie 里不能是秘密原文（应为 HMAC 派生值）');
+    assert.ok(r.body.includes('token'), '200 时应下发 token');
+  });
+
+  await t('错误授权码必须被拒（401 或限速 429），且不下发 cookie/token', async () => {
+    // 放在正例之后：错几次会触发 750ms 冷却，把正例挡掉。
+    const bad = ['wrong', '', '0'.repeat(64), '不是十六进制'];
+    for (const s of bad) {
+      const r = await bootstrap(s);
+      // 401 = 授权码不对；429 = 连错太多次被限速。两者都是"拒绝"，都可接受。
+      assert.ok(r.status === 401 || r.status === 429,
+        'secret=' + JSON.stringify(String(s).slice(0, 12)) + ' 应被拒（401/429），实际 ' + r.status);
+      assert.ok(!r.headers['set-cookie'], '被拒时不得下发 cookie');
+      assert.ok(!r.body.includes('"token"'), '被拒时不得下发 token');
+    }
+  });
+
+  await t('正确授权码少一位也必须被拒', async () => {
+    if (!hsSecret) { console.log('      (跳过：读不到 handshake 文件)'); return; }
+    const r = await bootstrap(hsSecret.slice(0, -1));
+    assert.ok(r.status === 401 || r.status === 429,
+      '截断的授权码不能通过，实际 ' + r.status);
+    assert.ok(!r.body.includes('"token"'), '不得下发 token');
+  });
+
+  await t('跨站请求（cross-site）必须 403，即使授权码正确', async () => {
+    if (!hsSecret) { console.log('      (跳过：读不到 handshake 文件)'); return; }
+    await new Promise(r => setTimeout(r, 900));   // 等过冷却
+    const r = await bootstrap(hsSecret, { 'Sec-Fetch-Site': 'cross-site' });
+    assert.strictEqual(r.status, 403, '跨站应 403，实际 ' + r.status);
+    assert.ok(!r.body.includes('"token"'), '跨站不得下发 token');
+  });
+
   console.log('\n=== M2: ReDoS 不应阻塞事件循环 ===');
   await t('8 万个 < 的清洗耗时 < 500ms', async () => {
     const { normalizeText } = require('./lib/code-extractor');

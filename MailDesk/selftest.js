@@ -7,6 +7,15 @@ const assert = require('assert');
 
 let pass = 0, fail = 0;
 function t(name, fn) {
+  // 同步 harness 收到 async 回调时，fn() 返回的是一个 Promise——
+  // 里面的断言失败会变成 unhandled rejection，而这里照样打 ✓。
+  // 实测：注入一条 t('x', async () => { assert.strictEqual(1, 2) })
+  // 输出是「✓ x」+「通过 147 失败 0」。直接拒绝，强制改用 tAsync。
+  if (fn && fn.constructor && fn.constructor.name === 'AsyncFunction') {
+    console.log('  ✗ ' + name + '\n      async 回调必须用 tAsync，否则断言失败会被静默吞掉');
+    fail++;
+    return;
+  }
   try { fn(); console.log('  ✓ ' + name); pass++; }
   catch (e) { console.log('  ✗ ' + name + '\n      ' + e.message); fail++; }
 }
@@ -290,7 +299,11 @@ t('磁盘上不出现明文凭据', () => {
   const onDisk = fs.readFileSync(path.join(dir, 'accounts.enc'), 'utf8');
   assert.ok(!onDisk.includes('rt-TOPSECRET'), 'refresh_token 不应以明文出现');
   assert.ok(!onDisk.includes('cid-SECRET'), 'client_id 不应以明文出现');
-  assert.ok(!onDisk.includes('test@outlook.com') || true, '邮箱地址可明文留存');
+  // 邮箱是**故意**明文存的（它是元数据，导出清单时需要它，且不是凭据）。
+  // 原来这里写成 `!onDisk.includes(...) || true`——恒真，永远不可能失败，
+  // 读起来却像"测过了邮箱不明文"。改成正向断言，把设计意图说清楚。
+  assert.ok(onDisk.includes('test@outlook.com'),
+    '邮箱地址应明文留存（元数据，不是凭据；导出清单依赖它）');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

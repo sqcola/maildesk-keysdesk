@@ -572,8 +572,12 @@ function parseJson(r) {
     assert.ok(!body.includes(SECRET), label + ' 出现了明文 TOTP 密钥');
     assert.ok(!body.includes(REC_VALUE), label + ' 出现了恢复码明文');
     assert.ok(!body.includes('SuperSecretPw!'), label + ' 出现了密码明文');
-    assert.ok(!/"(secret|totpSecret|passwordValue|value)"\s*:\s*"[A-Za-z0-9]/.
-      test(body) || true, label + ' 可能含秘密字段');
+    // 这里原来写的是 `test(body) || true`——一个恒真表达式，等于这条断言
+    // 永远不会失败。实测：往 summarize() 里塞一个 value: 'LeakedValue9x'
+    // （真实泄露形状，只是不等于上面那三个写死的常量），71 条测试依然全绿。
+    // 去掉 `|| true` 之后同样的变异立刻变红两条。
+    assert.ok(!/"(secret|totpSecret|passwordValue|value)"\s*:\s*"[A-Za-z0-9]/.test(body),
+      label + ' 含秘密形状的字段（secret/totpSecret/passwordValue/value 带字符串值）');
   };
 
   await t('entries.list 响应不含任何秘密', async () => {
