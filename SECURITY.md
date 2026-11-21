@@ -1,3 +1,5 @@
+[English](SECURITY-EN.md) | 简体中文
+
 # 安全策略
 
 ## 报告漏洞
