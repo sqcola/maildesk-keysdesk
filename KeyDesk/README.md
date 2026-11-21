@@ -1,7 +1,9 @@
+[English](README-EN.md) | 简体中文
+
 # KeyDesk — 2FA 密钥与恢复码管理
 
 ![Version](https://img.shields.io/badge/version-0.1.0--SNAPSHOT-orange?style=flat-square)
-![Tests](https://img.shields.io/badge/assertions-297%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/assertions-325%20passing-brightgreen?style=flat-square)
 
 本地 2FA 凭据管理工具。零第三方依赖，纯本地运行，**没有密钥文件**——密钥从你输入的口令派生。
 
@@ -27,18 +29,25 @@ node server.js
 
 然后打开终端打印的地址（默认 `http://127.0.0.1:2151`）。
 
-**第一次打开会要求粘贴一次本机授权码。** 它存在 `~/.keydesk/handshake`
-（Windows 上是 `C:\Users\你的用户名\.keydesk\handshake`），用记事本打开、整行 64 位
-十六进制复制过来即可。只需做一次，之后这个浏览器会记住（cookie 有效期一年）。
+**第一次打开会要求粘贴一次本机授权码。** 它存在 `KeyDesk/data/handshake`
+（相对于仓库根），服务启动时终端会打印它的绝对路径（`Auth file: ...`），照着那个找最稳。
+用记事本打开、整行 64 位十六进制复制过来即可。只需做一次，之后这个浏览器会记住
+（cookie 有效期一年）。
 
 为什么要这一步：服务只监听回环地址，但**本机上的任意进程**都能连这个端口。如果没有
 这道门，任何同机程序一个 `GET /api?action=handshake` 就能拿到 token，进而读取你的全部
-TOTP 明文。授权码只存在于你的用户目录里，别的账户读不到。
+TOTP 明文。
 
-不想用浏览器的话，脚本可以直接带请求头：
+> ⚠️ **和 MailDesk 不同**：KeyDesk 的授权码在**仓库目录**里（`KeyDesk/data/`），
+> 不是用户主目录。所以它挡得住「本机另一个 Windows 账户」的前提是
+> **仓库目录本身没有给对方读权限**。如果你把仓库放在 `C:\Users\Public\` 这类所有人可读的
+> 位置，这道门就形同虚设。要么把仓库放在自己的用户目录下，要么用
+> `KEYDESK_DATA_DIR` 把它指到家目录里的私有路径。
+
+不想用浏览器的话，脚本可以直接带请求头（在 `KeyDesk/` 目录下执行）：
 
 ```bash
-curl -H "X-KeyDesk-Handshake: $(cat ~/.keydesk/handshake)" \
+curl -H "X-KeyDesk-Handshake: $(cat data/handshake)" \
   "http://127.0.0.1:2151/api?action=handshake"
 ```
 
@@ -59,6 +68,8 @@ KeyDesk 把它们收在一个加密文件里，**没有密钥文件可偷**—�
 ---
 
 ## 第一次使用
+
+1. 启动服务（见上面「快速开始」），然后在浏览器打开终端打印的地址
 
 2. 打开页面，设置口令
 
@@ -185,7 +196,7 @@ secret 全程不进浏览器内存。浏览器只拿到 6 位数字。
 | 键盘记录 / 录屏 | ❌ | 口令和验证码都会经过 |
 | 浏览器扩展 | ❌ | 能读页面，等价于拿到验证码 |
 | 忘口令且丢恢复密钥 | ❌ | 设计如此，没有任何后门 |
-| **本机其他进程** | ❌ | 握手需要 `~/.keydesk/handshake` 里的本机秘密（与 MailDesk 同一套机制），没有秘密拿不到 token。但**同用户**运行的任意代码能读到这个文件，从而完全控制密钥库 —— 这条路无法用应用层鉴权堵住 |
+| **本机其他进程** | ❌ | 握手需要 `KeyDesk/data/handshake` 里的本机秘密（与 MailDesk 同一套机制），没有秘密拿不到 token。但**同用户**运行的任意代码能读到这个文件，从而完全控制密钥库 —— 这条路无法用应用层鉴权堵住 |
 | **解锁态被长期持有** | ❌ | 空闲锁可被 `settings.json` 改成 0（明文存储、无校验），改后重启仍生效。不过改它本身要先有 token，也就是要先过握手 |
 | **改口令后旧备份失效** | ❌ | 改口令**不换 DEK**。任何一份历史 `vault.enc` 副本 + 旧口令 = 永久可解**当前**数据。不是"云盘 30 天窗口"，是你复制过的每一份备份。口令曾泄露时，改口令不等于止损，只能重建密钥库 |
 | **用恢复密钥解锁后改口令** | ✅ | 恢复解锁的会话可以**直接设新口令**，不需要原口令。改完后恢复密钥仍然可用（逃生门不能丢），旧口令同时失效 |
@@ -265,7 +276,7 @@ set KEYDESK_PORT=2200 && node server.js
 
 ## 本轮实现范围与已知限制
 
-### 30 个 action 全部实现
+### 29 个 action 全部实现
 
 | 组 | action |
 |---|---|
@@ -274,9 +285,9 @@ set KEYDESK_PORT=2200 && node server.js
 | 条目 | `entries.list` `entries.get` `entries.upsert` `entries.remove` `entries.archive` |
 | 验证码 | `otp.codes` `otp.check` `otp.verify` |
 | 恢复码 | `recovery.reveal` `recovery.addSet` `recovery.setCurrent` `recovery.updateSet` `recovery.removeSet` `recovery.markCodes` |
-| 其它 | `secrets.reveal` `entries.export` `qr.svg` `backup.info` |
+| 其它 | `secrets.reveal` `audit.list` `entries.export` `export.encrypted` `print.recovery` `qr.svg` `backup.info` |
 
-（需求文档里的 action 表逐行数下来是 26 条，全部实现；文中的「23 个」是计数笔误。）
+上表与实际分发逻辑（`server.js` 的 `dispatch()`）逐条对齐，29 个 `case` 全部列出。
 
 ### 二维码：完整实现，不是简化版
 
@@ -331,7 +342,7 @@ ECC level M、Reed-Solomon 纠错、8 个掩码的罚分评估、格式信息 BC
 
 以下问题是公开审查时确认的，**在当前版本里真实存在**，修复前请自行判断风险。
 
-> **0.1.0-SNAPSHOT 之后修复的**：握手不再无条件发 token（现在要 `~/.keydesk/handshake`）、
+> **0.1.0-SNAPSHOT 之后修复的**：握手不再无条件发 token（现在要 `KeyDesk/data/handshake`）、
 > 加了实例锁（双开会拒绝启动而不是写坏 `vault.enc`）、恢复密钥解锁后可以直接改口令。
 > 这三条在下面不再列为缺陷。
 
