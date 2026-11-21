@@ -10,10 +10,11 @@ Closes #
 
 ## 怎么验证的
 
-- [ ] `cd MailDesk && node selftest.js` 通过
-- [ ] `cd MailDesk && node security-test.js` 通过
-- [ ] `cd KeyDesk && node selftest.js` 通过
-- [ ] `cd KeyDesk && node security-test.js` 通过
+- [ ] `cd MailDesk && node selftest.js` 通过（159 项）
+- [ ] `cd MailDesk && node security-test.js` 通过（64 项）
+- [ ] `cd MailDesk && node tools/check-key-test.js` 通过（27 项）
+- [ ] `cd KeyDesk && node selftest.js` 通过（241 项）
+- [ ] `cd KeyDesk && node security-test.js` 通过（84 项）
 
 <!-- 如果改了行为，说明你是怎么手工验证的 -->
 

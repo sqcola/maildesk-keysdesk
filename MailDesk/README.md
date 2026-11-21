@@ -1,7 +1,9 @@
+[English](README-EN.md) | 简体中文
+
 # 邮箱管家 MailDesk
 
 ![Version](https://img.shields.io/badge/version-0.1.0--SNAPSHOT-orange?style=flat-square)
-![Tests](https://img.shields.io/badge/assertions-201%20passing-brightgreen?style=flat-square)
+![Tests](https://img.shields.io/badge/assertions-250%20passing-brightgreen?style=flat-square)
 
 一个零依赖的本地邮件管理工具：批量管 Outlook / Microsoft 账号，收信发信、批量收验证码，并标注每个邮箱注册过哪些第三方服务。
 
@@ -169,13 +171,14 @@ b@outlook.com | xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx | M.C5xxxxx...
 
 ### refresh_token 的轮换与失效
 
-微软在每次成功刷新后签发一个新的 refresh_token。实测要点：
+微软在每次成功刷新后签发一个新的 refresh_token。要点：
 
-- **旧 token 不会立即作废**，有一段宽限期内仍可用（我们实测连刷三次，最初的旧值仍能换到 token）。
-  不要依赖这个宽限期，但它意味着"刷新后没来得及落盘"不会当场毁掉账号
-- **仍然必须把新 token 写回账户库**。宽限期会过去，而且如果别处也在刷新同一批 token，
-  谁先刷谁拿到新值，另一方最终会失效
-- 工具现在强制要求：没有接好持久化回调就**拒绝刷新**——宁可报错，也不做静默销毁凭据的操作
+- **按"兑换即失效"设计，不要依赖宽限期。** 微软没有公开承诺旧值在兑换后还能用多久，
+  实测中不同租户/时段的表现也不一致。本工具一律按最保守的假设处理：**新值没落盘，
+  这个账号就视为已废**。这样即使某天旧值真的立刻失效，也不会丢号
+- **必须把新 token 写回账户库**。如果别处也在刷新同一批 token，谁先刷谁拿到新值，
+  另一方最终会失效
+- 工具强制要求：没有接好持久化回调就**拒绝刷新**——宁可报错，也不做静默销毁凭据的操作
 
 > **无法从错误码判断是否有第三方在同时使用同一批 token。** 之前我在这里写过
 > "看到大量 `AADSTS700082` 说明有人在同时用"——这个推论不成立，`700082` 的意思是
@@ -290,7 +293,8 @@ UTF-8 带 BOM，Excel 双击不乱码。平台之间用 `; ` 而不是逗号，�
 - **没有「全部复制」按钮，聚合路径不自动复制**。逐行手动点击是唯一复制方式。
 - 结果板打开期间，单账户的「自动复制」会被强制关闭，避免静默覆写剪贴板。
 
-**退出时不会毁账号**：微软的 refresh_token 每次刷新会轮换，旧值立即作废。
+**退出时不会毁账号**：微软的 refresh_token 每次刷新会轮换，工具按"旧值兑换后即失效"
+的保守假设处理（见上文「refresh_token 的轮换与失效」）。
 所以 Ctrl+C / 关窗口 / 崩溃时，服务会先等所有在途的令牌兑换落盘（最多 15 秒）
 再退出，控制台会提示「正在等待 N 个令牌兑换落盘，请勿强制关闭窗口」。
 Windows 关闭控制台窗口发的是 `SIGBREAK`（不是 `SIGINT`），已一并接管。
@@ -411,7 +415,6 @@ MailDesk/
 ├── start.bat            # Windows 一键启动
 ├── selftest.js          # 159 项功能自检
 ├── security-test.js     # 64 项安全回归
-├── .gitignore           # 排除 data/、vault.key、.maildesk/
 ├── tools/
 │   ├── check-key.js     # 密钥体检：判断哪份 vault.key 能解开账户库
 │   └── check-key-test.js # 上述工具的 27 项测试（含 v1/v2/混装库）
@@ -423,6 +426,7 @@ MailDesk/
 │   ├── bulk-scan.js     # 批量收码：单账户单连接扫描
 │   ├── jobs.js          # 内存 job 管理器（幂等锁 / 取消 / 在途事务计数）
 │   ├── history.js       # 验证码历史（加密落盘 + 字段白名单）
+│   ├── platforms.js     # 平台标注：内置 17 个 + 自定义，归一化与统计
 │   └── vault.js         # 加密存储（密钥与密文分目录）
 ├── public/
 │   ├── index.html

@@ -1,3 +1,5 @@
+[English](README-EN.md) | 简体中文
+
 <div align="center">
 
 # MailDesk & KeyDesk
@@ -124,7 +126,7 @@ cd KeyDesk && node server.js
 | KeyDesk 忘了口令怎么办 | 用恢复密钥解锁，然后立刻去设置里改口令并重新生成恢复密钥 |
 | 两个都忘了 / 都丢了 | 数据永久不可读。**没有后门，没有找回途径**——这是设计，不是限制 |
 | 能不能放网盘同步 | **KeyDesk：可以**，密文放哪都安全（密钥从口令派生，没有密钥文件）。但改口令后云盘的历史版本仍可用旧口令解开，需手动清理。<br>**MailDesk：不可以**。它有独立的密钥文件 `~/.maildesk/vault.key`，必须与 `data/accounts.enc` 分开保管；两者同时泄露 = 全部账号失守。**不要把 MailDesk 目录放进同步盘。** |
-| 能不能多设备同时用 | 不能。两个实例写同一份库会互相覆盖甚至损坏文件。<br>**MailDesk 已加实例锁**，检测到已有实例会直接拒绝启动。<br>⚠️ **KeyDesk 目前没有实例锁**——双击两次 `start.bat` 会让第二个实例顺延到 2152 端口照样启动，两个进程共用同一个 `.tmp`，可能导致 `vault.enc` 损坏。**请确保只运行一个 KeyDesk 实例。** |
+| 能不能多设备同时用 | 不能。两个实例写同一份库会互相覆盖甚至损坏文件。<br>**MailDesk 和 KeyDesk 都已加实例锁**：检测到已有实例会直接拒绝启动，并提示你先关掉那个实例，而不是顺延到下一个端口照样跑起来。 |
 
 ## 🔧 它是怎么工作的
 
@@ -174,10 +176,11 @@ token 如果无条件下发，那道门就等于没关。
 
 所以有三道（**MailDesk 与 KeyDesk 都是这三道**）：
 
-1. **握手需要本机秘密** —— 首次启动生成 `~/.maildesk/handshake`
-   （KeyDesk 是 `~/.keydesk/handshake`，256 位随机），浏览器必须粘贴它才能换到会话
-   cookie。别的进程读不到这个文件，也过不了 `Sec-Fetch-Site: same-origin` 校验。
-   cookie 存的是秘密的 HMAC 而不是秘密本身
+1. **握手需要本机秘密** —— 首次启动生成一个 256 位随机串。MailDesk 放在
+   `~/.maildesk/handshake`（用户主目录，天然只有你自己能读）；KeyDesk 放在
+   `<仓库>/KeyDesk/data/handshake`（跟着数据目录走，可用 `KEYDESK_DATA_DIR` 改）。
+   浏览器必须粘贴它才能换到会话 cookie。别的普通进程读不到这个文件，也过不了
+   `Sec-Fetch-Site: same-origin` 校验。cookie 存的是秘密的 HMAC 而不是秘密本身
 2. **密钥文件收紧 ACL** —— `vault.key` / `accounts.enc` / `vault.enc` 每次写盘后都用
    `icacls` 去掉继承、只授权当前账户。否则第二个管理员账户能同时读到密钥和密文，
    完全绕过第 1 道
@@ -226,7 +229,7 @@ token 如果无条件下发，那道门就等于没关。
 | 测试套件：5 套共 575 条断言 | ✅ 全绿 |
 | `1.0.0`（真实场景长期验证后转正） | ⬜ 待 0.1.x 收敛 |
 
-**质量基线**：`selftest` + `security-test` 四套全绿 · 邮件库 100 账号零损伤 ·
+**质量基线**：`selftest` + `security-test` + `check-key-test` 五套全绿 · 邮件库 100 账号零损伤 ·
 关键安全修复均钉成断言（开发期间做过变异验证，但仓库里没有可复跑的变异测试脚本）
 
 ## 📦 运行
